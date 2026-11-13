@@ -5,7 +5,7 @@
 A skill for [Claude Code](https://claude.com/claude-code): a page in your browser where you check what
 Claude built, item by item, and hand your answers back, which wakes Claude up to go on.
 
-[![Review Desk in 60 seconds (watch on YouTube)](docs/video.jpg)](https://youtu.be/2NTXfoz-iYQ)
+[![Review Desk in 96 seconds (watch on YouTube)](docs/video.jpg)](https://youtu.be/q39QlVhRfe8)
 
 ## Why
 
