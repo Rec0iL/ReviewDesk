@@ -528,6 +528,45 @@ function scroller() {
   return getComputedStyle(main).overflowY === "auto" ? main : document.scrollingElement;
 }
 
+/** Where you are on the page: the item (innermost) at the top of what you see, and how far down. */
+function placeAnchor() {
+  const sc = scroller();
+  const head = $(".head");
+  let edge = sc === document.scrollingElement ? 0 : sc.getBoundingClientRect().top;
+  if (head && getComputedStyle(head).position === "sticky") edge += head.offsetHeight;
+  const line = edge + 40;
+  let best = null;
+  for (const box of document.querySelectorAll("main [data-id]")) {
+    const r = box.getBoundingClientRect();
+    if (r.top <= line && r.bottom > line) best = box; // later in the page = nested deeper
+    else if (!best && r.top > line) {
+      best = box;
+      break;
+    }
+  }
+  return best ? { id: best.dataset.id, top: best.getBoundingClientRect().top, at: sc.scrollTop } : null;
+}
+
+/** After the page was drawn again: the same item at the same spot, also while pictures above it
+ * finish loading (until you scroll yourself). */
+function holdPlace(anchor, wrap) {
+  if (!anchor) return;
+  const apply = () => {
+    const box = card(anchor.id);
+    if (box) scroller().scrollTop += box.getBoundingClientRect().top - anchor.top;
+    else scroller().scrollTop = anchor.at;
+  };
+  apply();
+  const watch = new ResizeObserver(apply);
+  watch.observe(wrap);
+  const stop = () => {
+    watch.disconnect();
+    for (const kind of ["wheel", "touchstart", "keydown", "pointerdown"]) removeEventListener(kind, stop, true);
+  };
+  for (const kind of ["wheel", "touchstart", "keydown", "pointerdown"]) addEventListener(kind, stop, true);
+  setTimeout(stop, 2500);
+}
+
 function card(id) {
   return document.querySelector(`[data-id="${CSS.escape(id)}"]`);
 }
@@ -987,7 +1026,7 @@ function renderMain({ keepPlace = false } = {}) {
     start: focused.selectionStart,
     end: focused.selectionEnd,
   } : null;
-  const scroll = scroller().scrollTop;
+  const anchor = keepPlace ? placeAnchor() : null;
 
   const wrap = el("div", "wrap");
   const head = el("div", "head");
@@ -1040,7 +1079,7 @@ function renderMain({ keepPlace = false } = {}) {
       again.setSelectionRange(keep.start, keep.end);
     }
   }
-  if (keepPlace) scroller().scrollTop = scroll;
+  if (keepPlace) holdPlace(anchor, wrap);
 }
 
 // -- start -----------------------------------------------------------------------------------------
