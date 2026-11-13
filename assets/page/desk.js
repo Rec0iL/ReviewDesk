@@ -490,8 +490,32 @@ window.addEventListener("beforeunload", (e) => {
 
 // -- handing back ----------------------------------------------------------------------------------
 
+/** Before a hand-back with items still open: say which, and offer to go to them first. */
+function confirmOpen() {
+  const open = allItems(S.round.doc).filter((it) => !(S.round.state.items[it.id] || {}).verdict);
+  if (!open.length) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const d = dialog("confirm");
+    let answer = false;
+    d.addEventListener("close", () => resolve(answer));
+    const list = el("ul", "open-list");
+    for (const it of open.slice(0, 8)) list.append(el("li", null, `<span class="mono">${esc(it.number)}</span> ${esc(plain(it.md))}`));
+    if (open.length > 8) list.append(el("li", "dim", esc(t("open.more", { n: open.length - 8 }))));
+    const body = el("div", "confirm-body");
+    body.append(el("p", null, esc(t(open.length === 1 ? "open.one" : "open.many", { n: open.length }))), list);
+    const foot = el("footer");
+    foot.append(
+      button("quiet", esc(t("open.anyway")), () => { answer = true; d.close(); }),
+      button("primary", esc(t("open.show")), () => { d.close(); S.jump = null; jumpTo("open"); }),
+    );
+    d.append(el("header", null, `<h2>${esc(t("open.title"))}</h2>`), body, foot);
+    d.showModal();
+  });
+}
+
 async function handBack() {
   if (S.handing || !S.current) return;
+  if (!(await confirmOpen())) return;
   S.handing = true;
   refreshHead();
   try {
