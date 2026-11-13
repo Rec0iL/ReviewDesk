@@ -110,6 +110,10 @@ class ParserTest(unittest.TestCase):
         self.assertTrue(items[-1]["done"])
         self.assertTrue(doc["sections"][0]["blocks"][1]["runnable"])
 
+    def test_videos_play(self):
+        html = markdown.parse("## A\n\n- [ ] Watch ![the cut](files/cut.mp4)\n", "v", files="/files/v")
+        self.assertIn('<video class="pic" src="/files/v/files/cut.mp4" title="the cut" controls', markdown.all_items(html)[0]["html"])
+
     def test_names_stay_unique(self):
         doc = markdown.parse("## A\n\n- [ ] one {#x}\n- [ ] two {#x}\n", "n")
         self.assertEqual([i["id"] for i in markdown.all_items(doc)], ["x", "1.2"])

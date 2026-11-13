@@ -38,6 +38,8 @@ def inline(md, files=""):
             alt, src = m.group(1), m.group(2)
             if not src.startswith(("http://", "https://")):
                 src = f"{files}/{quote(src.removeprefix('./'))}"
+            if re.search(r"\.(mp4|webm|mov|ogv)$", src, re.I):
+                return f'<video class="pic" src="{html.escape(src)}" title="{html.escape(alt)}" controls preload="metadata"></video>'
             return f'<img class="pic" src="{html.escape(src)}" alt="{html.escape(alt)}" loading="lazy">'
 
         def link(m):

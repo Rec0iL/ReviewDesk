@@ -244,6 +244,7 @@ button.link:hover { text-decoration: underline; }
 .head .meta button.link.mono { font-size: 0.88em; }
 .path { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
 img.pic { cursor: zoom-in; }
+video.pic { max-width: 100%; width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block; margin: 8px 0; background: #000; }
 
 /* -- dialogs ---------------------------------------------------------------------------------- */
 dialog.modal {

@@ -62,6 +62,7 @@ Use the projector (DP-3) and headphones.
   - `[text](path/in/project.rs:120)` (or `#L120`) opens the file in the page's viewer on that line;
   - `![what](files/name.png)` shows a picture from the round's `files/` folder (click to enlarge).
     Pictures side by side in one line make a before/after.
+    A video (`.mp4`, `.webm`, `.mov`) the same way gets a player.
 - **Code blocks:** fenced with a language. `bash`, `sh`, `shell` and `console` blocks get a **Run**
   button (the page's own computer only, never the phone); all get **Copy**. A block indented under
   an item belongs to it: lines the user attaches from its output go to that item.
