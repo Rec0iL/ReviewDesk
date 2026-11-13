@@ -62,6 +62,7 @@ const S = {
   ideaFilter: "all",
   questions: [],        // Claude's question sets waiting for answers
   jump: null,           // the tally's last jump: {v, i}
+  hidden: [],           // items the browser doesn't show (an extension hid or removed their cards)
   phoneOn: Boolean(BOOT.phone),
 };
 
@@ -503,6 +504,10 @@ function confirmOpen() {
     if (open.length > 8) list.append(el("li", "dim", esc(t("open.more", { n: open.length - 8 }))));
     const body = el("div", "confirm-body");
     body.append(el("p", null, esc(t(open.length === 1 ? "open.one" : "open.many", { n: open.length }))), list);
+    const gone = open.filter((it) => S.hidden.includes(it.number)).map((it) => it.number);
+    if (gone.length) {
+      body.append(el("p", "hidden-note", `<span>${esc(t(gone.length === 1 ? "hidden.one" : "hidden.many", { n: gone.length, list: gone.join(", ") }))}</span>`));
+    }
     const foot = el("footer");
     foot.append(
       button("quiet", esc(t("open.anyway")), () => { answer = true; d.close(); }),
@@ -592,7 +597,42 @@ function holdPlace(anchor, wrap) {
 }
 
 function card(id) {
-  return document.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  return document.querySelector(`main [data-id="${CSS.escape(id)}"]`);
+}
+
+/** Is this card really on the screen's page: there, with a size, not hidden by anything? */
+function shown(box) {
+  if (!box || !box.isConnected || !box.getClientRects().length) return false;
+  if (box.offsetHeight < 8 || getComputedStyle(box).visibility === "hidden") return false;
+  for (let n = box; n && n !== document.body; n = n.parentElement) {
+    if (Number(getComputedStyle(n).opacity) < 0.05) return false;
+  }
+  const words = box.querySelector(".top > .text");
+  return !words || (words.getClientRects().length > 0 && words.offsetHeight >= 8);
+}
+
+/** The round's items whose cards the browser doesn't show. The page draws every item, so this is
+ * something else at work in the browser: an extension that hides or removes parts of pages (a
+ * content blocker hiding what mentions a word, say). The header says so, with the items. */
+function checkHidden() {
+  const drawn = S.round && S.view === "round" && $("main .wrap .head");
+  const hidden = drawn ? allItems(S.round.doc).filter((it) => !shown(card(it.id))).map((it) => it.number) : [];
+  if (hidden.join() === S.hidden.join()) return;
+  S.hidden = hidden;
+  refreshHead();
+}
+
+let hiddenTimer;
+function watchHidden() {
+  const soon = () => {
+    clearTimeout(hiddenTimer);
+    hiddenTimer = setTimeout(checkHidden, 250);
+  };
+  new MutationObserver(soon).observe(document.documentElement, {
+    subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class", "hidden"],
+  });
+  addEventListener("resize", soon);
+  setInterval(checkHidden, 5000); // a style sheet an extension adds from outside leaves no trace in the page
 }
 
 // -- the sidebar ---------------------------------------------------------------------------------
@@ -734,7 +774,8 @@ function renderHead(head) {
     </div>
     <div class="bar" aria-hidden="true">${bar}</div>
     <div class="status"><div class="tally">${tally}</div><span class="saved"></span>
-      <button type="button" class="link copy-summary">${icon("copy")}<span>${esc(t("summary.copy"))}</span></button></div>`;
+      <button type="button" class="link copy-summary">${icon("copy")}<span>${esc(t("summary.copy"))}</span></button></div>`
+    + (S.hidden.length ? `<div class="hidden-note" role="alert">${icon("blocked")}<span><b>${esc(t(S.hidden.length === 1 ? "hidden.one" : "hidden.many", { n: S.hidden.length, list: S.hidden.join(", ") }))}</b> ${esc(t("hidden.why"))}</span></div>` : "");
   $(".copy-summary", head).onclick = copySummary;
   head.querySelectorAll(".jump").forEach((b) => (b.onclick = () => jumpTo(b.dataset.v)));
   const hand = $(".hand", head);
@@ -757,10 +798,19 @@ function aboutText(text) {
 function jumpTo(v) {
   const ids = allItems(S.round.doc).map((it) => it.id).filter((id) => (S.round.state.items[id]?.verdict || "open") === v);
   if (!ids.length) return;
-  S.jump = S.jump && S.jump.v === v ? { v, i: (S.jump.i + 1) % ids.length } : { v, i: 0 };
-  const target = card(ids[S.jump.i]);
+  checkHidden();
+  if (!ids.some((id) => shown(card(id)))) {
+    // Nothing of this kind is on the page to go to: say why instead of doing nothing.
+    S.jump = null;
+    refreshHead();
+    $(".hidden-note")?.scrollIntoView({ block: "nearest" });
+    return toast(t("hidden.jump"));
+  }
+  let i = S.jump && S.jump.v === v ? (S.jump.i + 1) % ids.length : 0;
+  while (!shown(card(ids[i]))) i = (i + 1) % ids.length; // past the ones the browser hides
+  S.jump = { v, i };
   refreshHead();
-  if (!target) return;
+  const target = card(ids[i]);
   target.scrollIntoView({ block: "center" });
   target.classList.remove("flash");
   void target.offsetWidth; // restart the animation
@@ -1104,6 +1154,7 @@ function renderMain({ keepPlace = false } = {}) {
     }
   }
   if (keepPlace) holdPlace(anchor, wrap);
+  checkHidden();
 }
 
 // -- start -----------------------------------------------------------------------------------------
@@ -1139,6 +1190,7 @@ window.addEventListener("scroll", onScroll, { passive: true });
 (async function start() {
   initExtras();
   renderWords();
+  watchHidden();
   try {
     await loadState();
     const last = recall();

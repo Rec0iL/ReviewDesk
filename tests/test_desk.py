@@ -214,6 +214,29 @@ class StoreTest(Temp):
         self.assertEqual(state["items"]["2.2"]["note"], "fine")
         self.assertEqual(state["items"]["2.1"]["verdict"], "")
 
+    def test_counted_items_are_the_checklists_items(self):
+        """What the page counts (the answers) is what it draws (the checklist): the same items in
+        the same order, also after a re-test and after Claude rewrote the checklist."""
+        def same():
+            doc = self.rounds.doc("sample")
+            state = self.rounds.state("sample", doc)
+            listed = [it["id"] for it in markdown.all_items(doc)]
+            self.assertEqual(list(state["items"]), listed)
+            c = self.rounds.summary("sample")["counts"]
+            self.assertEqual(c["total"], len(listed))
+            self.assertEqual(c["open"], sum(not a["verdict"] for a in state["items"].values()))
+            return state, c
+
+        state, _ = same()
+        for item_id in list(state["items"])[:3]:
+            self.rounds.set_item("sample", item_id, {"verdict": "works"})
+        self.rounds.retest("sample", [list(state["items"])[0]], "Again.")
+        _, before = same()
+        moved = SAMPLE.replace("## 2. The second part\n\n", "## 2. The second part\n\n- [ ] A new first step.\n")
+        write_round(self.root, "sample", moved)
+        _, after = same()
+        self.assertEqual((after["total"], after["open"]), (before["total"] + 1, before["open"] + 1))
+
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
         self.rounds.send("sample")

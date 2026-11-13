@@ -125,6 +125,13 @@ main { overflow-y: auto; min-height: 0; }
 .tally .jump:hover:not(:disabled) { background: var(--raised); color: var(--text); }
 .tally .jump:disabled { cursor: default; opacity: 1; }
 .item.open { border-left-style: dashed; }
+/* Items the browser doesn't show (an extension took them away): said where the numbers are. */
+.hidden-note {
+  display: flex; gap: 9px; align-items: flex-start; margin-top: 10px; padding: 9px 12px; border-radius: 10px;
+  font-size: 13px; line-height: 1.45; color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--change) 55%, transparent); background: color-mix(in srgb, var(--change) 12%, transparent);
+}
+.hidden-note svg.icon { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--change); }
 /* Where a jump lands: three pulses of the accent around the item. */
 .item.flash { animation: flash 0.6s ease-in-out 3; }
 @keyframes flash { 50% { box-shadow: var(--shadow), 0 0 0 5px color-mix(in srgb, var(--accent) 75%, transparent); } }
