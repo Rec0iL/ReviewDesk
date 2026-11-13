@@ -347,7 +347,7 @@ async function goTo(slug, item) {
     await openRound(slug);
   }
   const target = item && card(item);
-  if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (target) target.scrollIntoView({ block: "center" });
 }
 
 function tellPresence(item) {
@@ -698,7 +698,7 @@ function jumpTo(v) {
   const target = card(ids[S.jump.i]);
   refreshHead();
   if (!target) return;
-  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  target.scrollIntoView({ block: "center" });
   target.classList.remove("flash");
   void target.offsetWidth; // restart the animation
   target.classList.add("flash");
@@ -947,7 +947,7 @@ function refreshCard(box, b) {
   const a = S.round.state.items[b.id];
   const { parts } = box;
   const last = recall();
-  box.className = `item${a.verdict ? " v-" + a.verdict : ""}${a.retest && !a.verdict ? " retesting" : ""}`
+  box.className = `item${a.verdict ? " v-" + a.verdict : " open"}${a.retest && !a.verdict ? " retesting" : ""}`
     + `${last.round === S.current && last.item === b.id ? " here" : ""}`;
   for (const v of VERDICTS) parts.verdicts[v].setAttribute("aria-pressed", String(a.verdict === v));
   parts.severity.hidden = a.verdict !== "change";

@@ -124,8 +124,10 @@ main { overflow-y: auto; min-height: 0; }
 .tally .jump { background: none; border: 0; padding: 1px 4px; margin: 0 -4px; border-radius: 6px; color: var(--dim); font-size: 12.5px; }
 .tally .jump:hover:not(:disabled) { background: var(--raised); color: var(--text); }
 .tally .jump:disabled { cursor: default; opacity: 1; }
-.item.flash { animation: flash 1.4s ease-out; }
-@keyframes flash { 0%, 30% { box-shadow: var(--shadow), 0 0 0 4px color-mix(in srgb, var(--accent) 70%, transparent); } }
+.item.open { border-left-style: dashed; }
+/* Where a jump lands: three pulses of the accent around the item. */
+.item.flash { animation: flash 0.6s ease-in-out 3; }
+@keyframes flash { 50% { box-shadow: var(--shadow), 0 0 0 5px color-mix(in srgb, var(--accent) 75%, transparent); } }
 #phone[aria-pressed="true"] { color: var(--works); }
 video.grab { position: fixed; left: -10000px; top: 0; width: 2px; height: 2px; opacity: 0; }
 .lines.pick { user-select: none; }
