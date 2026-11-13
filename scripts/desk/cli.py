@@ -19,6 +19,7 @@ folder (the git repository, or the folder itself), or the one `--project` names.
                            "options": [{"label", "description"}]}]}); the answers come
                            through `wait` (or right away with --wait)
     config [--title T] [--accent #rrggbb]
+    selftest               checks that the desk works on this computer
     serve                  the server itself (what start runs in the background)
 """
 import argparse
@@ -242,6 +243,57 @@ def ask(root, source, then_wait=False):
         print("The answers come through `review-desk wait`.")
 
 
+def selftest():
+    """Checks, in a folder of its own, that the desk works here."""
+    import shutil
+    import tempfile
+    import threading
+
+    from . import qr
+    from .markdown import all_items
+    from .server import make_server
+
+    good = True
+
+    def check(name, step):
+        nonlocal good
+        try:
+            step()
+            print(f"ok    {name}")
+        except Exception as e:  # anything at all is worth showing here
+            good = False
+            print(f"FAIL  {name}: {e}")
+
+    def need(condition, why):
+        if not condition:
+            raise AssertionError(why)
+
+    check(f"Python {sys.version.split()[0]}", lambda: need(sys.version_info >= (3, 10), "3.10 or newer, please"))
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = proj.ensure(root) / "selftest"
+        folder.mkdir()
+        (folder / "checklist.md").write_text("# Self-test\n\n## A\n\n- [ ] One thing {#one}\n      Expected: it works.\n",
+                                             encoding="utf-8")
+        rounds = Rounds(proj.review_dir(root))
+        check("reads a checklist", lambda: need([i["id"] for i in all_items(rounds.doc("selftest"))] == ["one"], "item one"))
+        server = make_server(root, port=0, quiet=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        rt = {"port": server.server_port, "token": server.desk.token}
+        try:
+            check("serves the page on 127.0.0.1", lambda: need(call(rt, "GET", "/api/state")["rounds"], "a round"))
+            check("saves an answer", lambda: (call(rt, "POST", "/api/item", {"round": "selftest", "item": "one", "verdict": "works"}),
+                                             need("**Works**" in (folder / "answers.md").read_text(), "answers.md")))
+        finally:
+            server.shutdown()
+            server.server_close()
+    check("draws QR codes", lambda: need(qr.svg("http://192.168.1.2:41000/?p=x").startswith("<svg"), "an SVG"))
+    print(f"info  git: {'yes' if shutil.which('git') else 'no (reviews work, outside git)'}")
+    print(f"info  desktop notifications: {'notify-send' if shutil.which('notify-send') else 'none (the page still chimes)'}")
+    print("All good." if good else "Something is wrong; see above.")
+    sys.exit(0 if good else 1)
+
+
 def config(root, title=None, accent=None):
     proj.ensure(root)
     if accent and not (accent.startswith("#") and len(accent) in (4, 7)):
@@ -287,9 +339,12 @@ def main(argv=None):
     p = sub.add_parser("config", parents=[common])
     p.add_argument("--title")
     p.add_argument("--accent")
+    sub.add_parser("selftest", parents=[common])
     p = sub.add_parser("serve", parents=[common])
     p.add_argument("--port", type=int)
     args = parser.parse_args(argv)
+    if args.command == "selftest":
+        return selftest()
     root = proj.find_root(getattr(args, "project", None))
 
     if args.command == "start":

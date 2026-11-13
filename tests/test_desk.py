@@ -94,6 +94,22 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(doc["codes"], {"c1": {"lang": "bash", "text": "echo hello"}})
         self.assertTrue(doc["sections"][0]["blocks"][1]["runnable"])
 
+    def test_the_documented_example(self):
+        """The example in references/checklist.md reads the way that file says."""
+        text = (ROOT / "references" / "checklist.md").read_text(encoding="utf-8")
+        example = text.split("````markdown\n", 1)[1].split("\n````", 1)[0]
+        doc = markdown.parse(example, "m6a", files="/files/m6a")
+        self.assertEqual((doc["title"], doc["about"]), ("M6a: video with sound", "15 minutes"))
+        self.assertEqual(doc["meta"]["log"], "~/.local/state/lightgrove/log.txt, target/debug.log")
+        items = markdown.all_items(doc)
+        self.assertEqual([(i["id"], i["number"]) for i in items],
+                         [("pause", "1.1"), ("1.2", "1.2"), ("1.3", "1.3"), ("1.3.1", "1.3.1"), ("1.3.2", "1.3.2"),
+                          ("2.1", "2.1"), ("2.2", "2.2")])
+        self.assertEqual([f["label"] for f in items[0]["fields"]], ["setup", "do", "expected"])
+        self.assertIn('data-path="crates/media/src/transport.rs:120"', items[1]["fields"][0]["html"])
+        self.assertTrue(items[-1]["done"])
+        self.assertTrue(doc["sections"][0]["blocks"][1]["runnable"])
+
     def test_names_stay_unique(self):
         doc = markdown.parse("## A\n\n- [ ] one {#x}\n- [ ] two {#x}\n", "n")
         self.assertEqual([i["id"] for i in markdown.all_items(doc)], ["x", "1.2"])

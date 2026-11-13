@@ -15,7 +15,7 @@ Plan: `~/.claude/plans/review-desk.md` (approved 2026-11-13). One commit per pha
 - [x] 4. Ideas board, question cards (`ask`), summary to copy
 - [x] 5. Phone: a second listener on the home network with its own secret, the QR code, the
       firewall check; no Run there
-- [ ] 6. The skill: `SKILL.md`, references, the self-test, the install script (link and hook),
+- [x] 6. The skill: `SKILL.md`, references, the self-test, the install script (link and hook),
       README
 
 ## Review
@@ -63,3 +63,11 @@ phone switch, and offered only picture/log/file; turning it off closed the liste
 the desk's own secret doesn't work there, files need the phone's cookie, no Run, no switch, no
 quit. The firewall is only asked (FedoraWorkstation lets 1025–65535 through), once per opening.
 Also: the start of a Run is reported before its output can arrive (a race in a test).
+
+**Phase 6** (2026-11-13): 42 tests on both Pythons (one checks that the example in
+`references/checklist.md` reads the way the file says). `SKILL.md` gives Claude the loop (start,
+write a round, `wait` in the background, act, re-arm), when to ask on the page, how to write a good
+round; `references/` has the format, the commands and the question cards. `review-desk selftest`
+passes on both Pythons. `tools/install.py` links the skill and the command and, only with
+`--hook`, adds the session-start hook (tried in a throwaway home: added once, other settings kept,
+backed up, removed cleanly).
