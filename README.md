@@ -57,6 +57,11 @@ Optional: `python3 tools/install.py --hook` adds a small session-start hook to
 `~/.claude/settings.json`, so a new Claude session hears about answers that are waiting (it prints
 nothing otherwise). `--remove` takes everything out again; your settings are backed up first.
 
+**Updates:** Claude Code doesn't update skills by itself. Review Desk checks for you instead: once
+a day, in the background, it looks whether this clone's GitHub repo has something new, and the next
+session (with the hook) or `review-desk status` says so in one line. `review-desk update` then gets
+it; nothing updates without you. Set `REVIEW_DESK_NO_UPDATE_CHECK=1` to turn the check off.
+
 **Needs:** Python 3.10 or newer, no packages. Linux tested; `notify-send` for desktop notifications
 (the page chimes without it).
 

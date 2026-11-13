@@ -22,6 +22,7 @@ folder (the git repository, or the folder itself), or the one `--project` names.
                            through `wait` (or right away with --wait)
     config [--title T] [--accent #rrggbb]
     selftest               checks that the desk works on this computer
+    update                 gets a newer Review Desk (git pull, fast-forward only)
     serve                  the server itself (what start runs in the background)
 """
 import argparse
@@ -114,10 +115,17 @@ def stop(root):
 
 
 def status(root, hook=False):
+    from .updates import notice
+    newer = notice()
     folder = proj.review_dir(root)
     if not folder.is_dir():
-        if not hook:
+        if hook:
+            if newer:
+                print(newer)
+        else:
             print(f"no desk in {root} yet (review-desk start makes one)")
+            if newer:
+                print(newer)
         return
     events = Events(folder)
     waiting = events.waiting()
@@ -127,6 +135,8 @@ def status(root, hook=False):
             what = ", ".join(sorted({e.get("round") or e.get("question", "?") for e in waiting}))
             print(f"Review Desk: answers waiting in {root.name} ({what}). "
                   f"Run `review-desk wait` (it returns at once) and read them.")
+        if newer:
+            print(newer)
         return
     rt = running(root)
     print(f"{proj.settings(root)['title']} · " + (f"running on {rt['url']}, {rt['pages']} page(s) open" if rt else "not running"))
@@ -150,6 +160,8 @@ def status(root, hook=False):
             print(f"  you are on {presence.get('round')} · {presence.get('item') or 'the round'} (since {presence.get('at')})")
     for e in waiting:
         print(f"  waiting for Claude: {e['type']} {e.get('round') or e.get('question', '')} at {e['at']}")
+    if newer:
+        print(newer)
 
 
 def show_events(root, events):
@@ -343,11 +355,17 @@ def main(argv=None):
     p.add_argument("--title")
     p.add_argument("--accent")
     sub.add_parser("selftest", parents=[common])
+    sub.add_parser("update", parents=[common])
     p = sub.add_parser("serve", parents=[common])
     p.add_argument("--port", type=int)
     args = parser.parse_args(argv)
     if args.command == "selftest":
         return selftest()
+    if args.command == "update":
+        from .updates import update
+        ok, said = update()
+        print(said)
+        sys.exit(0 if ok else 1)
     root = proj.find_root(getattr(args, "project", None))
 
     if args.command == "start":

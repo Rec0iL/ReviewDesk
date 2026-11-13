@@ -12,9 +12,13 @@ itself); `--project PATH` names another, before or after the command.
 - `review-desk stop`: stops it (also stops anything a Run started).
 - `review-desk status`: the project, whether it runs and how many pages are open, each round with
   its numbers, where the user is right now, and what waits for you.
-- `review-desk status --hook`: one line, and only when answers wait (for the session-start hook).
+- `review-desk status --hook`: a line only when answers wait, and one when an update is waiting (for the session-start hook).
 - `review-desk config --title "LightGrove" --accent "#7fb3ff"`: the name and colour the page shows.
 - `review-desk selftest`: checks that the desk works here (Python, parser, server, saving, QR).
+- `review-desk update`: gets a newer Review Desk from the clone's upstream (fetch, then a
+  fast-forward; refuses when the clone has local changes). `status` and the session-start hook say
+  when one is waiting: at most once a day they start a quiet `git fetch` in the background, so they
+  never wait on the network. `REVIEW_DESK_NO_UPDATE_CHECK=1` turns that off.
 
 ## Hearing back
 

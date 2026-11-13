@@ -780,6 +780,93 @@ class PhoneTest(ServerBase):
             conn.getresponse()
 
 
+# -- updates -----------------------------------------------------------------------------------
+
+class UpdateTest(Temp):
+    """A stand-in for GitHub (a bare repo), a clone as the installed skill, then a newer commit."""
+
+    def setUp(self):
+        super().setUp()
+        from desk import updates
+        self.updates = updates
+        run = lambda *a, cwd=None: subprocess.run(a, cwd=cwd, check=True, capture_output=True, text=True)
+        self.run = run
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+        self._env = {k: os.environ.get(k) for k in [*env, "XDG_CACHE_HOME", "REVIEW_DESK_NO_UPDATE_CHECK"]}
+        os.environ.update(env)
+        os.environ["XDG_CACHE_HOME"] = str(self.root / "cache")
+        os.environ.pop("REVIEW_DESK_NO_UPDATE_CHECK", None)
+        self.hub = self.root / "hub.git"
+        run("git", "init", "-q", "--bare", "-b", "main", str(self.hub))
+        self.author = self.root / "author"
+        run("git", "clone", "-q", str(self.hub), str(self.author))
+        self.commit("first")
+        self.skill = self.root / "skill"
+        run("git", "clone", "-q", str(self.hub), str(self.skill))
+        self._repo = updates.REPO
+        updates.REPO = self.skill
+
+    def tearDown(self):
+        if self.updates.fetching:
+            self.updates.fetching.wait(10)
+            self.updates.fetching = None
+        self.updates.REPO = self._repo
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        super().tearDown()
+
+    def commit(self, text):
+        (self.author / "file.txt").write_text(text)
+        self.run("git", "add", "file.txt", cwd=self.author)
+        self.run("git", "commit", "-q", "-m", text, cwd=self.author)
+        self.run("git", "push", "-q", "origin", "main", cwd=self.author)
+
+    def test_quiet_when_up_to_date(self):
+        self.assertIsNone(self.updates.notice())
+
+    def test_notice_after_the_background_fetch(self):
+        self.commit("second")
+        self.commit("third")
+        self.assertIsNone(self.updates.notice())  # this session starts the fetch, doesn't wait for it
+        deadline = time.time() + 10
+        while time.time() < deadline and self.updates.behind() == 0:
+            time.sleep(0.1)
+        said = self.updates.notice()  # the next session
+        self.assertIn("Review Desk has an update (2 new commits)", said)
+        self.assertFalse(self.updates.fetch_soon(), "at most one fetch a day")
+        self.assertTrue(self.updates.fetch_soon(now=time.time() + 25 * 3600))
+        os.environ["REVIEW_DESK_NO_UPDATE_CHECK"] = "1"
+        self.assertIsNone(self.updates.notice())
+
+    def test_update_pulls_and_refuses_local_changes(self):
+        self.commit("second")
+        ok, said = self.updates.update()
+        self.assertTrue(ok, said)
+        self.assertIn("Review Desk updated", said)
+        self.assertIn("second", said)
+        self.assertEqual((self.skill / "file.txt").read_text(), "second")
+        ok, said = self.updates.update()
+        self.assertEqual((ok, said), (True, "Review Desk is up to date."))
+        (self.skill / "file.txt").write_text("mine")
+        self.commit("third")
+        ok, said = self.updates.update()
+        self.assertFalse(ok)
+        self.assertIn("local changes", said)
+        self.assertEqual((self.skill / "file.txt").read_text(), "mine")
+
+    def test_no_upstream(self):
+        lone = self.root / "lone"
+        self.run("git", "init", "-q", str(lone))
+        self.updates.REPO = lone
+        self.assertIsNone(self.updates.notice())
+        self.assertFalse(self.updates.fetch_soon())
+        self.assertFalse(self.updates.update()[0])
+
+
 # -- the command ---------------------------------------------------------------------------------
 
 class CommandTest(Temp):

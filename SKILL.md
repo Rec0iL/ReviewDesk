@@ -55,6 +55,10 @@ the project around the current folder; `--project PATH` names another.
 When a session starts with a note like "Review Desk: answers waiting", run `review-desk wait`
 (it returns at once with them).
 
+When a session starts with "Review Desk has an update", tell the user in one line and offer it;
+run `review-desk update` only after they agree (it pulls the new version, fast-forward only). A
+running desk keeps the old version until `review-desk stop` and `start`.
+
 ## Asking questions
 
 `review-desk status` shows how many pages are open. While at least one is, ask planning questions
@@ -90,6 +94,7 @@ on the page: `review-desk ask` with JSON shaped like your chat question tool (se
 | `review-desk status` | rounds, open pages, where the user is, what waits for you |
 | `review-desk stop` / `open` | stop it / show it in the browser again |
 | `review-desk selftest` | checks that the desk works on this computer |
+| `review-desk update` | gets a newer Review Desk (only when the user agreed) |
 
 If something seems off: `review-desk status`, then `.review/.desk.log`, then `review-desk stop`
 and `start`.
