@@ -1,7 +1,7 @@
 "use strict";
-// Review Desk's page: the project's reviews in the sidebar, one review open with its items, your
-// answers saved as you type (and kept until the desk has them), everything kept live with the
-// desk through server-sent events.
+// Review Desk's page: the project's reviews in the sidebar, one review open with its items. Your
+// answers, questions and ideas save as you type (and wait on the page until the desk has them);
+// "Hand back" wakes Claude; what Claude does shows up live, with a chime or a notification.
 
 const BOOT = window.BOOT || { token: "", project: {} };
 const CLIENT = Math.random().toString(36).slice(2, 10);
@@ -13,25 +13,52 @@ const ICONS = {
   change: '<path d="M7 7l10 10M17 7L7 17"/>',
   blocked: '<circle cx="12" cy="12" r="7.5"/><path d="M6.8 17.2l10.4-10.4"/>',
   skipped: '<path d="M5 17l5-5-5-5"/><path d="M13 17l5-5-5-5"/>',
+  question: '<path d="M9.2 9.3a2.9 2.9 0 1 1 4.1 2.6c-.8.4-1.3 1-1.3 1.9v.4"/><path d="M12 17.2v.1"/><circle cx="12" cy="12" r="8.5"/>',
+  idea: '<path d="M9 17.5h6M10 20.5h4"/><path d="M12 3.5a5.5 5.5 0 0 0-3.2 10c.7.5 1.2 1.3 1.2 2.2h4c0-.9.5-1.7 1.2-2.2A5.5 5.5 0 0 0 12 3.5z"/>',
+  reply: '<path d="M9.5 8.5L5 13l4.5 4.5"/><path d="M5 13h9a5 5 0 0 0 5-5V6"/>',
+  remove: '<path d="M7 7l10 10M17 7L7 17"/>',
+  send: '<path d="M4.5 12h13"/><path d="M12.5 6.5L18 12l-5.5 5.5"/>',
+  bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5h4"/>',
+  "bell-off": '<path d="M6 16.5V11a6 6 0 0 1 9.4-4.9M18 11v5.5l1.5 1.5H8"/><path d="M10 20.5h4"/><path d="M4 4l16 16"/>',
+  sound: '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
+  "sound-off": '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
 };
 const LAST = "review-desk:last";
 const LANG = "review-desk:lang";
+const PREFS = "review-desk:prefs";
 
 const S = {
   lang: pickLang(),
+  prefs: { sound: true, notify: true, ...stored(PREFS) },
   state: null,          // the project and its rounds (the sidebar)
   current: null,        // the open round's slug
   round: null,          // the open round: {doc, state}
-  outbox: new Map(),    // answers the desk doesn't have yet: "round\nitem" -> {round, id, fields}
+  outbox: new Map(),    // what the desk doesn't have yet, by "round\nitem[\nmessage]"
   flushTimer: null,
   retryTimer: null,
   flushing: false,
   again: false,
   failed: null,
   live: false,
+  handing: false,
+  audio: null,
 };
 
-// -- words ---------------------------------------------------------------------------------------
+// -- words and small helpers ---------------------------------------------------------------------
+
+function stored(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function store(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
 
 function pickLang() {
   try {
@@ -48,8 +75,6 @@ function t(key, vars = {}) {
   return s;
 }
 
-// -- small helpers -------------------------------------------------------------------------------
-
 const $ = (sel, root = document) => root.querySelector(sel);
 function el(tag, cls, html) {
   const e = document.createElement(tag);
@@ -57,30 +82,26 @@ function el(tag, cls, html) {
   if (html !== undefined) e.innerHTML = html;
   return e;
 }
+function button(cls, html, onclick, title) {
+  const b = el("button", cls, html);
+  b.type = "button";
+  if (onclick) b.onclick = onclick;
+  if (title) b.title = title;
+  return b;
+}
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const colour = (v) => `var(--${v})`;
+const clock = (at) => (at || "").slice(11, 16) || at || "";
+const recall = () => stored(LAST);
+const remember = (patch) => store(LAST, { ...recall(), ...patch });
 
 function toast(text) {
   const box = $("#toast");
   box.textContent = text;
   box.classList.add("shown");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => box.classList.remove("shown"), 4200);
-}
-
-function recall() {
-  try {
-    return JSON.parse(localStorage.getItem(LAST) || "{}") || {};
-  } catch {
-    return {};
-  }
-}
-
-function remember(patch) {
-  try {
-    localStorage.setItem(LAST, JSON.stringify({ ...recall(), ...patch }));
-  } catch {}
+  toast.timer = setTimeout(() => box.classList.remove("shown"), 4800);
 }
 
 // -- talking to the desk -------------------------------------------------------------------------
@@ -105,15 +126,33 @@ async function api(path, body) {
 async function loadState() {
   S.state = await api("/api/state");
   applyProject();
-  if (S.round) syncSide();
-  else renderSide();
+  if (S.round) {
+    syncSide();
+    refreshHead();
+  } else renderSide();
 }
 
-/** Your answers the desk doesn't have yet, laid over what it sent. */
+function summary() {
+  return S.state && S.state.rounds.find((r) => r.slug === S.current);
+}
+
+function thread(round, id) {
+  return id === "overall" ? round.state.overall.messages : (round.state.items[id] || {}).messages;
+}
+
+/** What the desk doesn't have yet, laid over what it sent. */
 function overlay(round, slug) {
   for (const entry of S.outbox.values()) {
     if (entry.round !== slug) continue;
-    if (entry.id === "overall") Object.assign(round.state.overall, entry.fields);
+    if (entry.mid) {
+      const list = thread(round, entry.id);
+      if (!list) continue;
+      const at = list.findIndex((m) => m.id === entry.mid);
+      if (entry.fields.delete) {
+        if (at >= 0) list.splice(at, 1);
+      } else if (at >= 0) Object.assign(list[at], entry.fields);
+      else list.push({ id: entry.mid, from: "you", at: "", ...entry.fields });
+    } else if (entry.id === "overall") Object.assign(round.state.overall, entry.fields);
     else if (round.state.items[entry.id]) Object.assign(round.state.items[entry.id], entry.fields);
   }
   return round;
@@ -142,11 +181,12 @@ async function openRound(slug, { keepPlace = false } = {}) {
 }
 
 function connect() {
-  const source = new EventSource(`/api/events?t=${encodeURIComponent(BOOT.token)}`);
+  const source = new EventSource(`/api/events?t=${encodeURIComponent(BOOT.token)}&c=${CLIENT}`);
   let first = true;
   source.onopen = () => {
     S.live = true;
     renderConn();
+    tellPresence();
     if (first && S.state) {
       first = false;
       return;
@@ -181,29 +221,150 @@ function connect() {
 }
 
 async function onEvent(event) {
-  if (event.client === CLIENT) return; // our own answer coming back
-  if (event.type === "rounds" || event.type === "settings") {
+  if (event.client === CLIENT) return; // our own change coming back
+  if (event.type === "listening") {
+    if (S.state) S.state.listening = event.on;
+    refreshHead();
+    return;
+  }
+  if (event.type === "handled" || event.type === "rounds" || event.type === "settings") {
     await loadState();
     if (!S.current && S.state.rounds.length) await openRound(S.state.rounds[0].slug);
     return;
   }
   if (event.type === "round") {
-    if (event.by === "claude" && event.new) toast(t("new.round", { t: event.slug }));
-    else if (event.by === "claude" && event.slug === S.current) toast(t("changed.by.claude"));
+    if (event.by === "claude") {
+      if (event.notify) announce(event);
+      else if (event.slug === S.current && event.what === "edit") toast(t("changed.by.claude"));
+    }
     if (event.slug === S.current) await openRound(S.current, { keepPlace: true });
-    else await loadState();
+    if (event.slug !== S.current || event.by === "claude") await loadState();
+    if (!S.current) await openRound(event.slug);
   }
 }
 
+// -- telling you: a chime, a toast, or a notification while the page is hidden -------------------
+
+function chime() {
+  if (!S.prefs.sound) return;
+  try {
+    S.audio = S.audio || new AudioContext();
+    const ctx = S.audio;
+    const t0 = ctx.currentTime + 0.02;
+    for (const [freq, delay] of [[659.3, 0], [987.8, 0.13]]) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0 + delay);
+      gain.gain.exponentialRampToValueAtTime(0.09, t0 + delay + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + delay + 0.6);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0 + delay);
+      osc.stop(t0 + delay + 0.65);
+    }
+  } catch {}
+}
+
+function announce(event) {
+  const round = (S.state && S.state.rounds.find((r) => r.slug === event.slug)) || {};
+  const title = t(`notify.${event.what}`) || event.notify.title;
+  const body = event.what === "new" ? event.notify.body : [round.title || event.slug, event.what === "reply" ? event.notify.body : ""].filter(Boolean).join(" · ");
+  chime();
+  if (document.hidden && S.prefs.notify && "Notification" in window && Notification.permission === "granted") {
+    const n = new Notification(title, { body, tag: `${event.slug}:${event.what}`, icon: faviconData() });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+      goTo(event.slug, event.item);
+    };
+  } else toast(body ? `${title}: ${body}` : title);
+}
+
+function faviconData() {
+  const link = document.querySelector('link[rel="icon"]');
+  return link ? link.href : undefined;
+}
+
+async function goTo(slug, item) {
+  if (slug !== S.current) {
+    if (item) remember({ round: slug, item });
+    await openRound(slug);
+  }
+  const target = item && card(item);
+  if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function tellPresence(item) {
+  const notify = S.prefs.notify && "Notification" in window && Notification.permission === "granted";
+  const body = { round: S.current || "", visible: !document.hidden, notify };
+  if (item !== undefined) body.item = item;
+  api("/api/presence", body).catch(() => {});
+}
+
+document.addEventListener("visibilitychange", () => tellPresence());
+// The sound may only start after you touched the page once.
+document.addEventListener("pointerdown", () => {
+  if (S.prefs.sound && !S.audio) {
+    try {
+      S.audio = new AudioContext();
+    } catch {}
+  }
+  if (S.audio && S.audio.state === "suspended") S.audio.resume().catch(() => {});
+});
+
+function renderPrefs() {
+  const bell = $("#bell");
+  const blocked = "Notification" in window && Notification.permission === "denied";
+  const on = S.prefs.notify && "Notification" in window && Notification.permission === "granted";
+  bell.innerHTML = icon(on ? "bell" : "bell-off");
+  bell.title = blocked ? t("notify.blocked") : on ? t("notify.on") : t("notify.off");
+  bell.setAttribute("aria-label", bell.title);
+  bell.setAttribute("aria-pressed", String(on));
+  const sound = $("#sound");
+  sound.innerHTML = icon(S.prefs.sound ? "sound" : "sound-off");
+  sound.title = S.prefs.sound ? t("sound.on") : t("sound.off");
+  sound.setAttribute("aria-label", sound.title);
+  sound.setAttribute("aria-pressed", String(S.prefs.sound));
+}
+
+$("#bell").onclick = async () => {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") {
+    await Notification.requestPermission().catch(() => {});
+    S.prefs.notify = true;
+  } else if (Notification.permission === "granted") S.prefs.notify = !S.prefs.notify;
+  store(PREFS, S.prefs);
+  renderPrefs();
+  tellPresence();
+};
+
+$("#sound").onclick = () => {
+  S.prefs.sound = !S.prefs.sound;
+  store(PREFS, S.prefs);
+  renderPrefs();
+  if (S.prefs.sound) chime();
+};
+
 // -- saving: every change goes into the outbox, which hands it to the desk ----------------------
 
-function change(id, fields, delay = 0) {
-  const key = `${S.current}\n${id}`;
+function change(id, fields, delay = 0, mid = null) {
+  const key = [S.current, id, mid].filter((x) => x !== null).join("\n");
   const before = S.outbox.get(key);
-  S.outbox.set(key, { round: S.current, id, fields: { ...(before ? before.fields : {}), ...fields } });
+  S.outbox.set(key, { round: S.current, id, mid, fields: { ...(before ? before.fields : {}), ...fields } });
   clearTimeout(S.flushTimer);
   S.flushTimer = setTimeout(flush, delay);
   showSaved();
+}
+
+function request(entry) {
+  if (entry.mid) {
+    return ["/api/message", entry.fields.delete
+      ? { round: entry.round, item: entry.id, id: entry.mid, delete: true }
+      : { round: entry.round, item: entry.id, id: entry.mid, kind: entry.fields.kind, text: entry.fields.text ?? "", to: entry.fields.to }];
+  }
+  if (entry.id === "overall") return ["/api/overall", { round: entry.round, note: entry.fields.note ?? "" }];
+  return ["/api/item", { round: entry.round, item: entry.id, ...entry.fields }];
 }
 
 async function flush() {
@@ -215,11 +376,8 @@ async function flush() {
   clearTimeout(S.retryTimer);
   try {
     for (const [key, entry] of [...S.outbox]) {
-      const overall = entry.id === "overall";
       try {
-        await api(overall ? "/api/overall" : "/api/item", overall
-          ? { round: entry.round, note: entry.fields.note ?? "" }
-          : { round: entry.round, item: entry.id, ...entry.fields });
+        await api(...request(entry));
         if (S.outbox.get(key) === entry) S.outbox.delete(key);
         S.failed = null;
       } catch (e) {
@@ -244,8 +402,19 @@ async function flush() {
   showSaved();
 }
 
-function showSaved() {
-  const box = $(".head .saved");
+/** Everything handed to the desk now; false when it can't be. */
+async function flushNow() {
+  clearTimeout(S.flushTimer);
+  for (let i = 0; i < 3 && S.outbox.size; i++) {
+    while (S.flushing) await new Promise((r) => setTimeout(r, 50));
+    await flush();
+    if (S.failed) return false;
+  }
+  return S.outbox.size === 0;
+}
+
+function showSaved(root = document) {
+  const box = $(".head .saved", root) || $(".saved", root);
   if (!box) return;
   const waiting = S.outbox.size > 0;
   box.textContent = S.failed && waiting ? S.failed : waiting ? t("saving") : t("saved");
@@ -256,6 +425,28 @@ window.addEventListener("beforeunload", (e) => {
   if (S.outbox.size) e.preventDefault();
 });
 
+// -- handing back ----------------------------------------------------------------------------------
+
+async function handBack() {
+  if (S.handing || !S.current) return;
+  S.handing = true;
+  refreshHead();
+  try {
+    if (!(await flushNow())) throw new Error(S.failed || t("save.waiting"));
+    const r = await api("/api/send", { round: S.current });
+    S.round.state.sent = r.sent;
+    const entry = summary();
+    if (entry) Object.assign(entry, { sent: r.sent, read: false });
+    toast(r.listening ? t("handed.listening") : t("handed.later"));
+  } catch (e) {
+    toast(t("hand.failed", { e: e.message }));
+  } finally {
+    S.handing = false;
+    refreshHead();
+    renderSide();
+  }
+}
+
 // -- where you are -------------------------------------------------------------------------------
 
 let presenceTimer;
@@ -265,7 +456,7 @@ function here(id) {
   document.querySelectorAll(".item.here").forEach((c) => c.classList.remove("here"));
   card(id)?.classList.add("here");
   clearTimeout(presenceTimer);
-  presenceTimer = setTimeout(() => api("/api/presence", { round: S.current, item: id }).catch(() => {}), 700);
+  presenceTimer = setTimeout(() => tellPresence(id), 700);
 }
 
 function card(id) {
@@ -307,17 +498,15 @@ function renderSide() {
   }
   for (const r of rounds) {
     const li = el("li");
-    const b = el("button");
-    b.type = "button";
+    const b = button(null, "", () => openRound(r.slug).catch((e) => toast(e.message)));
     if (r.slug === S.current) b.setAttribute("aria-current", "true");
     const c = r.counts || { total: 0 };
     const done = (c.total || 0) - (c.open || 0);
-    const sub = r.error
-      ? esc(r.error)
-      : esc(t("of", { a: done, b: c.total || 0 })) + (r.round > 1 ? ` · ${esc(t("round", { n: r.round }))}` : "");
-    b.innerHTML = `${ring(c)}<span><span class="title">${esc(r.title)}</span><span class="sub">${sub}</span></span>`
+    const bits = r.error ? [esc(r.error)] : [esc(t("of", { a: done, b: c.total || 0 }))];
+    if (r.round > 1) bits.push(esc(t("round", { n: r.round })));
+    if (r.sent) bits.push(`<span class="sent">${esc(t("side.sent"))}</span>`);
+    b.innerHTML = `${ring(c)}<span><span class="title">${esc(r.title)}</span><span class="sub">${bits.join(" · ")}</span></span>`
       + (c.retest ? `<span class="badge" title="${esc(t("retest.count", { n: c.retest }))}">${c.retest}</span>` : "");
-    b.onclick = () => openRound(r.slug).catch((e) => toast(e.message));
     li.append(b);
     list.append(li);
   }
@@ -325,8 +514,8 @@ function renderSide() {
 
 /** The open round's numbers in the sidebar, as they are on this page right now. */
 function syncSide() {
-  const entry = S.state && S.round && S.state.rounds.find((r) => r.slug === S.current);
-  if (entry) entry.counts = counts();
+  const entry = summary();
+  if (entry && S.round) entry.counts = counts();
   renderSide();
 }
 
@@ -352,11 +541,15 @@ function counts() {
 function renderHead(head) {
   const { doc, state } = S.round;
   const c = counts();
+  const entry = summary() || {};
+  const listening = Boolean(S.state && S.state.listening);
   const meta = [];
   if (doc.about) meta.push(esc(t("about", { t: doc.about })));
   if (state.round > 1) meta.push(esc(t("round", { n: state.round })));
   if (doc.meta && doc.meta.commit) meta.push(`<span class="mono">${esc(t("commit", { c: doc.meta.commit }))}</span>`);
-  meta.push(esc(state.sent ? t("sent", { t: state.sent }) : t("not.sent")));
+  meta.push(state.sent
+    ? `${esc(t("sent", { t: clock(state.sent) }))} · <span class="${entry.read ? "read" : ""}">${esc(entry.read ? t("read") : t("unread"))}</span>`
+    : esc(t("not.sent")));
   const pct = (n) => `${(100 * n) / Math.max(c.total, 1)}%`;
   const bar = VERDICTS.map((v) => `<span style="width:${pct(c[v])};background:${colour(v)}"></span>`).join("");
   const tally = [...VERDICTS, "open"]
@@ -366,17 +559,30 @@ function renderHead(head) {
   head.innerHTML = `
     <div class="row">
       <div class="titles"><h1>${esc(doc.title)}</h1><div class="meta">${meta.map((m) => `<span>${m}</span>`).join("")}</div></div>
-      <div class="actions"><span class="saved"></span></div>
+      <div class="actions">
+        <div class="send">
+          <button type="button" class="primary hand">${icon("send")}<span></span></button>
+          <span class="listening ${listening ? "on" : ""}" title="${esc(listening ? t("listening.tip") : t("not.listening.tip"))}">${esc(listening ? t("listening") : t("not.listening"))}</span>
+        </div>
+      </div>
     </div>
     <div class="bar" aria-hidden="true">${bar}</div>
-    <div class="tally">${tally}</div>`;
-  showSaved();
+    <div class="status"><div class="tally">${tally}</div><span class="saved"></span></div>`;
+  const hand = $(".hand", head);
+  $("span", hand).textContent = S.handing ? t("handing") : state.sent ? t("hand.again") : t("hand.back");
+  hand.disabled = S.handing;
+  hand.onclick = handBack;
+  showSaved(head);
+}
+
+function refreshHead() {
+  const head = $(".head");
+  if (head && S.round) renderHead(head);
 }
 
 /** After an answer changed: the header's numbers, the sections' counts, the sidebar. */
 function refreshTotals() {
-  const head = $(".head");
-  if (head) renderHead(head);
+  refreshHead();
   updateSectionCounts();
   syncSide();
 }
@@ -386,9 +592,7 @@ function codeBlock(b) {
   const pre = el("pre");
   pre.textContent = b.text;
   const tools = el("div", "tools");
-  const copy = el("button", null, esc(t("copy")));
-  copy.type = "button";
-  copy.onclick = async () => {
+  const copy = button(null, esc(t("copy")), async () => {
     try {
       await navigator.clipboard.writeText(b.text);
       copy.textContent = t("copied");
@@ -400,7 +604,7 @@ function codeBlock(b) {
       copy.textContent = t("select.it");
     }
     setTimeout(() => (copy.textContent = t("copy")), 1400);
-  };
+  });
   tools.append(copy);
   box.append(pre, tools);
   return box;
@@ -424,9 +628,107 @@ function blocks(list, into) {
 }
 
 function autosize(area) {
-  if (area.hidden) return;
+  if (area.hidden || !area.isConnected) return;
+  const least = area.classList.contains("big") ? 100 : area.classList.contains("small") ? 40 : 60;
   area.style.height = "auto";
-  area.style.height = `${Math.max(area.classList.contains("big") ? 100 : 60, area.scrollHeight + 2)}px`;
+  area.style.height = `${Math.max(least, area.scrollHeight + 2)}px`;
+}
+
+// -- threads: your questions, ideas and replies, Claude's answers --------------------------------
+
+function newId() {
+  return `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function messageBox(id, m, list, redraw) {
+  const mine = m.from !== "claude";
+  const box = el("div", `msg ${mine ? "you" : "claude"} ${m.kind}`);
+  box.dataset.mid = m.id;
+  const head = el("div", "who");
+  if (mine) {
+    head.innerHTML = `${icon(m.kind === "idea" ? "idea" : m.kind === "comment" ? "reply" : "question")}<span>${esc(t("your." + m.kind))}</span>`;
+    if (m.kind === "idea" && m.status && m.status !== "new") head.innerHTML += `<span class="chip ${m.status}">${esc(t("idea." + m.status))}</span>`;
+    head.append(button("quiet tiny remove", icon("remove"), () => {
+      list.splice(list.indexOf(m), 1);
+      change(id, { delete: true }, 0, m.id);
+      redraw();
+    }, t("remove")));
+    box.append(head);
+    const area = el("textarea", "note small");
+    area.value = m.text;
+    area.placeholder = t("ph." + m.kind);
+    area.setAttribute("aria-label", t("your." + m.kind));
+    area.oninput = () => {
+      m.text = area.value;
+      autosize(area);
+      change(id, { kind: m.kind, text: m.text, ...(m.to ? { to: m.to } : {}) }, 600, m.id);
+    };
+    box.append(area);
+    requestAnimationFrame(() => autosize(area));
+  } else {
+    const target = m.to && list.find((x) => x.id === m.to);
+    head.innerHTML = `<span class="avatar">C</span><span>${esc(t("claude"))}</span>`
+      + (target ? `<span class="to">${esc(t("on." + target.kind))}</span>` : "")
+      + `<span class="at">${esc(clock(m.at))}</span>`;
+    box.append(head, el("div", "said", m.html || esc(m.text)));
+    const tools = el("div", "tools");
+    tools.append(button("quiet tiny", `${icon("reply")}<span>${esc(t("reply"))}</span>`, () => addMessage(id, list, "comment", redraw, m.id)));
+    box.append(tools);
+  }
+  return box;
+}
+
+function addMessage(id, list, kind, redraw, to) {
+  const m = { id: newId(), from: "you", kind, text: "", at: "" };
+  if (to) m.to = to;
+  if (kind === "idea") m.status = "new";
+  list.push(m);
+  change(id, { kind, text: "", ...(to ? { to } : {}) }, 600, m.id);
+  redraw();
+  const area = document.querySelector(`[data-mid="${m.id}"] textarea`);
+  if (area) area.focus();
+}
+
+function threadBlock(id, list) {
+  const wrap = el("div", "thread-wrap");
+  const draw = () => {
+    wrap.replaceChildren();
+    if (list.length) {
+      const box = el("div", "thread");
+      for (const m of list) box.append(messageBox(id, m, list, draw));
+      wrap.append(box);
+    }
+    const add = el("div", "add");
+    add.append(
+      button("quiet small-button", `${icon("question")}<span>${esc(t("add.question"))}</span>`, () => addMessage(id, list, "question", draw)),
+      button("quiet small-button", `${icon("idea")}<span>${esc(t("add.idea"))}</span>`, () => addMessage(id, list, "idea", draw)),
+    );
+    wrap.append(add);
+  };
+  draw();
+  return wrap;
+}
+
+// -- an item --------------------------------------------------------------------------------------
+
+function retestBlock(a) {
+  const box = el("div", "retest");
+  box.innerHTML = `<div class="title">${icon("reply")}<b>${esc(t("retest.title", { n: a.retest.round }))}</b></div>`
+    + (a.retest.html ? `<div class="said">${a.retest.html}</div>` : "");
+  return box;
+}
+
+function historyBlock(a) {
+  const box = el("div", "history");
+  for (const h of [...a.history].reverse()) {
+    const v = h.verdict ? t(h.verdict) : t("open");
+    const d = el("details");
+    d.innerHTML = `<summary><i style="background:${h.verdict ? colour(h.verdict) : "var(--control)"}"></i>${esc(t("history.round", { n: h.round, v }))}${h.severity ? ` (${esc(t(h.severity))})` : ""}</summary>`
+      + (h.retest_html ? `<div class="said claude-said">${h.retest_html}</div>` : "")
+      + (h.html ? `<div class="said">${h.html}</div>` : "");
+    box.append(d);
+  }
+  return box;
 }
 
 function itemCard(b) {
@@ -437,6 +739,7 @@ function itemCard(b) {
   top.append(el("div", "num", esc(b.number)), el("div", "text", `<p>${b.html}</p>`));
   const body = el("div", "body");
 
+  if (a.retest) body.append(retestBlock(a));
   if (b.fields.length) {
     const fields = el("div", "fields");
     for (const f of b.fields) {
@@ -452,9 +755,7 @@ function itemCard(b) {
   const verdicts = el("div", "verdicts");
   verdicts.setAttribute("role", "group");
   for (const v of VERDICTS) {
-    const btn = el("button", v, `${icon(v)}<span>${esc(t(v))}</span>`);
-    btn.type = "button";
-    btn.onclick = () => {
+    parts.verdicts[v] = button(v, `${icon(v)}<span>${esc(t(v))}</span>`, () => {
       a.verdict = a.verdict === v ? "" : v;
       const fields = { verdict: a.verdict };
       if (a.verdict !== "change" && a.severity) fields.severity = a.severity = "";
@@ -462,25 +763,21 @@ function itemCard(b) {
       refreshCard(box, b);
       refreshTotals();
       if (a.verdict && a.verdict !== "works") parts.note.focus();
-    };
-    parts.verdicts[v] = btn;
-    verdicts.append(btn);
+    });
+    verdicts.append(parts.verdicts[v]);
   }
   answer.append(verdicts);
 
   parts.severity = el("div", "severity");
   parts.severity.append(el("span", null, esc(t("severity"))));
   for (const s of SEVERITIES) {
-    const btn = el("button", s, esc(t(s)));
-    btn.type = "button";
-    btn.onclick = () => {
+    parts.severities[s] = button(s, esc(t(s)), () => {
       a.severity = a.severity === s ? "" : s;
       change(b.id, { severity: a.severity });
       refreshCard(box, b);
       refreshTotals();
-    };
-    parts.severities[s] = btn;
-    parts.severity.append(btn);
+    });
+    parts.severity.append(parts.severities[s]);
   }
   answer.append(parts.severity);
 
@@ -492,7 +789,8 @@ function itemCard(b) {
     autosize(parts.note);
     change(b.id, { note: a.note }, 600);
   };
-  answer.append(parts.note);
+  answer.append(parts.note, threadBlock(b.id, a.messages));
+  if (a.history.length) answer.append(historyBlock(a));
   body.append(answer);
 
   blocks(b.children.filter((c) => c.type === "item"), body);
@@ -510,7 +808,8 @@ function refreshCard(box, b) {
   const a = S.round.state.items[b.id];
   const { parts } = box;
   const last = recall();
-  box.className = `item${a.verdict ? " v-" + a.verdict : ""}${last.round === S.current && last.item === b.id ? " here" : ""}`;
+  box.className = `item${a.verdict ? " v-" + a.verdict : ""}${a.retest && !a.verdict ? " retesting" : ""}`
+    + `${last.round === S.current && last.item === b.id ? " here" : ""}`;
   for (const v of VERDICTS) parts.verdicts[v].setAttribute("aria-pressed", String(a.verdict === v));
   parts.severity.hidden = a.verdict !== "change";
   for (const s of SEVERITIES) parts.severities[s].setAttribute("aria-pressed", String(a.severity === s));
@@ -528,6 +827,8 @@ function updateSectionCounts() {
   }
 }
 
+// -- the page --------------------------------------------------------------------------------------
+
 function renderEmpty(main) {
   const none = !S.state || !S.state.rounds.length;
   main.innerHTML = `<div class="empty-state"><div class="mark">${icon("works")}</div>
@@ -540,8 +841,13 @@ function renderMain({ keepPlace = false } = {}) {
 
   // Whatever you are typing in stays focused, with the caret where it was; the page stays put.
   const focused = document.activeElement;
-  const holder = focused && focused.tagName === "TEXTAREA" ? focused.closest("[data-id]") : null;
-  const keep = holder ? { id: holder.dataset.id, start: focused.selectionStart, end: focused.selectionEnd } : null;
+  const typing = focused && focused.tagName === "TEXTAREA";
+  const keep = typing ? {
+    id: focused.closest("[data-id]")?.dataset.id,
+    mid: focused.closest("[data-mid]")?.dataset.mid,
+    start: focused.selectionStart,
+    end: focused.selectionEnd,
+  } : null;
   const scroll = main.scrollTop;
 
   const wrap = el("div", "wrap");
@@ -574,15 +880,18 @@ function renderMain({ keepPlace = false } = {}) {
     autosize(area);
     change("overall", { note: area.value }, 600);
   };
-  overall.append(area);
+  overall.append(area, threadBlock("overall", S.round.state.overall.messages));
   wrap.append(overall);
 
   main.replaceChildren(wrap);
   updateSectionCounts();
   requestAnimationFrame(() => autosize(area));
 
-  if (keep) {
-    const again = keep.id === "overall" ? area : card(keep.id)?.parts?.note;
+  if (keep && keep.id) {
+    const holder = card(keep.id);
+    const again = keep.mid
+      ? holder?.querySelector(`[data-mid="${CSS.escape(keep.mid)}"] textarea`)
+      : keep.id === "overall" ? area : holder?.parts?.note;
     if (again) {
       again.hidden = false;
       again.focus({ preventScroll: true });
@@ -600,6 +909,7 @@ function renderWords() {
   $("#lang").value = S.lang;
   applyProject();
   renderConn();
+  renderPrefs();
 }
 
 $("#lang").onchange = (e) => {

@@ -17,6 +17,7 @@ SEVERITIES = ("cosmetic", "annoying", "broken")
 KINDS = ("question", "idea", "reply", "comment")
 IDEA_STATES = ("new", "planned", "done", "declined")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+MESSAGE_ID = re.compile(r"^[a-z][a-z0-9]{0,31}$")
 MAX_TEXT = 50_000
 LABELS = {
     "works": "Works", "partly": "Partly works", "change": "Needs change",
@@ -144,15 +145,25 @@ class Rounds:
     def set_overall(self, slug, note):
         return self.edit(slug, lambda doc, state: state["overall"].update(note=text(note)) or state["overall"])
 
-    def message(self, slug, item_id, kind, body, sender="you", reply_to=None):
-        """A new message in an item's thread (`overall` for the round's own): your question,
-        idea or comment, or Claude's reply."""
+    def message(self, slug, item_id, kind, body, sender="you", reply_to=None, message_id=None):
+        """A message in an item's thread (`overall` for the round's own): your question, idea or
+        comment, or Claude's reply. The page names its messages itself (`message_id`), so saving
+        one again only changes its text."""
         if kind not in KINDS:
             raise ValueError(f"a message is a {', '.join(KINDS)}")
+        if message_id is not None and not MESSAGE_ID.match(str(message_id)):
+            raise ValueError("a message id is a few letters and digits")
 
         def change(doc, state):
-            thread = state["overall"]["messages"] if item_id == "overall" else item(state, item_id)["messages"]
-            m = {"id": next_id(thread, "m"), "from": sender, "kind": kind, "text": text(body), "at": now()}
+            thread = messages(state, item_id)
+            m = next((m for m in thread if m["id"] == message_id), None) if message_id else None
+            if m:
+                if m["from"] != sender:
+                    raise ValueError("that message isn't yours to change")
+                m.update(text=text(body), kind=kind, edited=now())
+                return m
+            m = {"id": message_id or next_id(thread, "c" if sender == "claude" else "m"), "from": sender,
+                 "kind": kind, "text": text(body), "at": now()}
             if reply_to:
                 m["to"] = reply_to
             if kind == "idea":
@@ -162,23 +173,30 @@ class Rounds:
 
         return self.edit(slug, change)
 
-    def edit_message(self, slug, item_id, message_id, body=None, status=None, delete=False):
-        """Changes (or removes) one of your messages, or an idea's status."""
+    def delete_message(self, slug, item_id, message_id, sender="you"):
+        """Takes one of your messages back (gone already is fine)."""
 
         def change(doc, state):
-            thread = state["overall"]["messages"] if item_id == "overall" else item(state, item_id)["messages"]
-            m = next((m for m in thread if m["id"] == message_id), None)
-            if not m:
-                raise ValueError(f"no message {message_id} on {item_id}")
-            if delete:
-                thread.remove(m)
-                return None
-            if body is not None:
-                m["text"] = text(body)
-            if status is not None:
-                if m["kind"] != "idea" or status not in IDEA_STATES:
-                    raise ValueError(f"an idea's status is one of {', '.join(IDEA_STATES)}")
-                m["status"] = status
+            thread = messages(state, item_id)
+            for m in list(thread):
+                if m["id"] == message_id:
+                    if m["from"] != sender:
+                        raise ValueError("that message isn't yours to remove")
+                    thread.remove(m)
+            return None
+
+        return self.edit(slug, change)
+
+    def idea_status(self, slug, item_id, message_id, status):
+        """Claude's word on an idea: planned, done, declined (or new again)."""
+        if status not in IDEA_STATES:
+            raise ValueError(f"an idea's status is one of {', '.join(IDEA_STATES)}")
+
+        def change(doc, state):
+            m = next((m for m in messages(state, item_id) if m["id"] == message_id), None)
+            if not m or m["kind"] != "idea":
+                raise ValueError(f"no idea {message_id} on {item_id}")
+            m["status"] = status
             return m
 
         return self.edit(slug, change)
@@ -197,13 +215,10 @@ class Rounds:
                 a = item(state, item_id)
                 a["history"].append({
                     "round": state["round"] - 1, "verdict": a["verdict"], "severity": a["severity"],
-                    "note": a["note"], "files": a["files"], "at": now(),
+                    "note": a["note"], "files": a["files"], "retest": a["retest"], "at": now(),
                 })
                 a.update(verdict="", severity="", note="", files=[])
                 a["retest"] = {"round": state["round"], "note": text(note), "at": now()}
-                if note.strip():
-                    a["messages"].append({"id": next_id(a["messages"], "m"), "from": "claude", "kind": "reply",
-                                          "text": text(note), "at": now()})
             state["sent"] = None
             return state["round"]
 
@@ -226,6 +241,10 @@ def item(state, item_id):
     if item_id not in state["items"]:
         raise ValueError(f"no item {item_id!r} in this round")
     return state["items"][item_id]
+
+
+def messages(state, item_id):
+    return state["overall"]["messages"] if item_id == "overall" else item(state, item_id)["messages"]
 
 
 def next_id(thread, prefix):
@@ -253,6 +272,19 @@ def quoted(body, pad="  "):
     return [f"{pad}> {line}" if line.strip() else f"{pad}>" for line in body.strip().splitlines()]
 
 
+def thread_md(thread, pad):
+    """An item's messages as lines of `answers.md` (empty ones left out)."""
+    out = []
+    for m in thread:
+        if not m["text"].strip():
+            continue
+        who = "Claude" if m["from"] == "claude" else "You"
+        status = f" [{m.get('status', 'new')}]" if m["kind"] == "idea" else ""
+        to = f" (to {m['to']})" if m.get("to") else ""
+        out.append(f"{pad}- {who}, {m['kind']} {m['id']}{status}{to}: " + m["text"].strip().replace("\n", " ⏎ "))
+    return out
+
+
 def answers_md(slug, doc, state):
     """The round's answers as Claude reads them: each item with its verdict, note, files, thread,
     re-test and history; items not tried listed short."""
@@ -278,22 +310,19 @@ def answers_md(slug, doc, state):
                 out += quoted(a["note"])
             for f in a["files"]:
                 out.append(f"  - {f['kind'].capitalize()}: [{f['name']}](files/{f['name']})" + (f" {f['label']}" if f.get("label") else ""))
-            for m in a["messages"]:
-                who = "Claude" if m["from"] == "claude" else "You"
-                status = f" [{m['status']}]" if m["kind"] == "idea" else ""
-                out.append(f"  - {who}, {m['kind']} {m['id']}{status}: " + m["text"].strip().replace("\n", " ⏎ "))
+            out += thread_md(a["messages"], "  ")
             for h in a["history"]:
                 out.append(f"  - Round {h['round']}: {LABELS[h['verdict']]}" + (f" ({h['severity']})" if h["severity"] else "")
                            + (": " + h["note"].strip().replace("\n", " ⏎ ") if h["note"].strip() else ""))
+                if (h.get("retest") or {}).get("note"):
+                    out.append(f"    - (it came back for round {h['round']} with: {h['retest']['note'].strip()})")
         out.append("")
     o = state["overall"]
     if o["note"].strip() or o["files"] or o["messages"]:
         out += ["## Overall", ""] + quoted(o["note"], "")
         for f in o["files"]:
             out.append(f"- {f['kind'].capitalize()}: [{f['name']}](files/{f['name']})")
-        for m in o["messages"]:
-            who = "Claude" if m["from"] == "claude" else "You"
-            out.append(f"- {who}, {m['kind']} {m['id']}: " + m["text"].strip().replace("\n", " ⏎ "))
+        out += thread_md(o["messages"], "")
         out.append("")
     return "\n".join(out)
 

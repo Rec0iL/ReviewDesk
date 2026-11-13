@@ -76,12 +76,17 @@ svg.icon { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-w
 .rounds li button[aria-current="true"] { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .rounds .title { font-weight: 500; font-size: 14px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .rounds .sub { color: var(--dim); font-size: 12px; }
+.rounds .sub .sent { color: var(--works); }
 .rounds .badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); }
 .rounds .empty { color: var(--dim); padding: 8px 10px; font-size: 13.5px; }
 .ring { width: 34px; height: 34px; }
 .ring circle { fill: none; stroke-width: 4; }
 .side .foot { border-top: 1px solid var(--border); padding: 10px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .side .foot select { background: var(--control); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
+.icon-button { padding: 5px 7px; line-height: 0; background: transparent; border-color: transparent; color: var(--dim); }
+.icon-button:hover { color: var(--text); border-color: var(--border); }
+.icon-button[aria-pressed="true"] { color: var(--accent); }
+.icon-button svg.icon { width: 17px; height: 17px; }
 .side .foot .conn { margin-left: auto; font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
 .side .foot .conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--works); }
 .side .foot .conn.off::before { background: var(--change); }
@@ -100,7 +105,16 @@ main { overflow-y: auto; min-height: 0; }
 .head .meta { color: var(--dim); font-size: 13px; margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .head .actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
 .head .titles { min-width: 0; }
-.head .saved { color: var(--dim); font-size: 12.5px; white-space: nowrap; }
+.head .send { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.head .hand { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; }
+.head .listening { font-size: 12px; color: var(--faint); display: inline-flex; align-items: center; gap: 6px; cursor: help; }
+.head .listening::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.head .listening.on { color: var(--dim); }
+.head .listening.on::before { background: var(--works); box-shadow: 0 0 0 3px color-mix(in srgb, var(--works) 25%, transparent); }
+.head .meta .read { color: var(--works); }
+.head .status { display: flex; align-items: baseline; gap: 12px; margin-top: 7px; }
+.head .status .tally { margin-top: 0; }
+.head .saved { color: var(--dim); font-size: 12.5px; white-space: nowrap; margin-left: auto; }
 .head .saved.bad { color: var(--change); font-weight: 500; white-space: normal; max-width: 300px; text-align: right; }
 .bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--control); margin-top: 12px; }
 .bar span { transition: width 0.25s; }
@@ -163,7 +177,39 @@ textarea.note {
   width: 100%; margin-top: 10px; min-height: 60px; resize: vertical;
   color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
 }
-.item.v-change textarea.note { border-color: color-mix(in srgb, var(--change) 50%, var(--border)); }
+.item.v-change > .top > .body > .answer > textarea.note { border-color: color-mix(in srgb, var(--change) 50%, var(--border)); }
+textarea.note.small { min-height: 40px; margin-top: 4px; }
+.item.retesting { border-left-color: var(--accent); }
+
+/* -- threads ---------------------------------------------------------------------------------- */
+.thread { display: grid; gap: 8px; margin-top: 10px; }
+.msg { border-radius: 10px; padding: 8px 10px; background: var(--raised); border: 1px solid var(--border); }
+.msg.you.idea { border-color: color-mix(in srgb, var(--partly) 35%, var(--border)); }
+.msg.claude { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.msg .who { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--dim); }
+.msg.you.idea .who { color: var(--partly); }
+.msg .who .at, .msg .who .to { font-weight: 400; color: var(--faint); }
+.msg .who .at { margin-left: auto; }
+.msg .who .remove { margin-left: auto; }
+.msg .avatar { width: 18px; height: 18px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; background: var(--accent); color: var(--accent-ink); }
+.msg .said { margin-top: 4px; font-size: 14px; }
+.msg .tools { margin-top: 4px; display: flex; justify-content: flex-end; }
+.chip { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 99px; background: var(--control); color: var(--dim); }
+.chip.planned { background: color-mix(in srgb, var(--skipped) 22%, var(--panel)); color: var(--skipped); }
+.chip.done { background: color-mix(in srgb, var(--works) 22%, var(--panel)); color: var(--works); }
+.add { display: flex; gap: 6px; margin-top: 8px; }
+button.small-button { font-size: 12.5px; padding: 3px 9px; display: inline-flex; align-items: center; gap: 5px; }
+button.tiny { font-size: 12px; padding: 1px 6px; display: inline-flex; align-items: center; gap: 4px; }
+button.tiny svg.icon { width: 13px; height: 13px; }
+.retest { border-radius: 10px; padding: 8px 12px; margin: 8px 0; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.retest .title { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--accent); }
+.retest .said { margin-top: 3px; font-size: 14px; }
+.history { margin-top: 8px; font-size: 13px; color: var(--dim); }
+.history summary { cursor: pointer; display: flex; align-items: center; gap: 7px; }
+.history summary i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.history .said { padding: 4px 0 4px 15px; color: var(--text); }
+.history .claude-said { color: var(--accent); }
+
 .overall { margin-top: 36px; }
 .overall h2 { font-size: 16px; margin: 0 0 4px; }
 .overall p { color: var(--dim); margin: 0; }
@@ -193,6 +239,8 @@ textarea.note {
   .wrap { padding: 0 16px 100px; }
   .head .row { flex-wrap: wrap; }
   .head .actions { margin-left: 0; width: 100%; justify-content: space-between; }
+  .head .send { flex-direction: row-reverse; align-items: center; justify-content: space-between; width: 100%; }
+  .head .status { flex-wrap: wrap; }
   .field { grid-template-columns: 1fr; gap: 0; }
   .item { padding: 12px; }
 }

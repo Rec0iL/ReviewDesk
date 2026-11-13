@@ -6,7 +6,7 @@ Plan: `~/.claude/plans/review-desk.md` (approved 2026-11-13). One commit per pha
       `.review/` and the git exclude; the parser, live updates; the sidebar with rounds and
       progress, items with verdict and note, saving as you type; English and German, Grove with
       the accent, "pick up where you left"
-- [ ] 2. The conversation: Send to Claude, `wait`, `answers.md`, `status --hook`; questions and
+- [x] 2. The conversation: Send to Claude, `wait`, `answers.md`, `status --hook`; questions and
       ideas on items, severity; threads (`reply`), re-test rounds with history (`retest`);
       notifications and the chime, "where you are"
 - [ ] 3. Attachments and actions: screenshots with the markup editor, screen recordings, log lines,
@@ -27,3 +27,11 @@ and answers moved with their items; a second page's answer shows live; with the 
 answers wait on the page and go through when it is back (the tab reconnects by itself, the secret
 is kept in `.review/.secret`); English and German; dark and light; phone width without sideways
 scrolling.
+
+**Phase 2** (2026-11-13): 29 tests on both Pythons. Checked live: a background
+`review-desk wait` woke on "Hand back to Claude" and printed the answers with the thread (reply,
+idea) and the re-test; the page showed "Claude is listening", then "Claude has read it"; Claude's
+reply arrived live with a toast; replies, questions and ideas save as you type. Re-test notes live
+in the banner and move into the history with the next round (not copied into the thread). The
+desktop notification (notify-send, with Open) fires only when no page can show it; tested with a
+stand-in so nothing popped up.

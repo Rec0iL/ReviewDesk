@@ -200,9 +200,43 @@ class StoreTest(Temp):
         self.assertEqual((a["verdict"], a["note"]), ("", ""))
         self.assertEqual(a["history"][0]["note"], "slow")
         self.assertEqual(a["retest"]["round"], 2)
-        self.assertEqual(a["messages"][-1]["from"], "claude")
+        self.assertEqual(a["messages"], [])
         self.assertIsNone(state["sent"])
         self.assertEqual(store.counts(state)["retest"], 1)
+        self.rounds.set_item("sample", "open", {"verdict": "works"})
+        self.rounds.retest("sample", ["open"], "Faster still.")
+        a = self.rounds.state("sample")["items"]["open"]
+        self.assertEqual(a["history"][1]["retest"]["note"], "Faster now.")
+        self.assertEqual(a["retest"]["note"], "Faster still.")
+
+    def test_messages(self):
+        self.rounds.message("sample", "open", "question", "Why?", message_id="mabc")
+        self.rounds.message("sample", "open", "question", "Why so slow?", message_id="mabc")
+        self.rounds.message("sample", "open", "idea", "Cache it.", message_id="mdef")
+        reply = self.rounds.message("sample", "open", "reply", "It decodes twice.", sender="claude", reply_to="mabc")
+        thread = self.rounds.state("sample")["items"]["open"]["messages"]
+        self.assertEqual([(m["id"], m["text"]) for m in thread],
+                         [("mabc", "Why so slow?"), ("mdef", "Cache it."), (reply["id"], "It decodes twice.")])
+        self.assertEqual(reply["id"], "c1")
+        self.assertEqual(thread[1]["status"], "new")
+        with self.assertRaises(ValueError):  # Claude's words are Claude's
+            self.rounds.message("sample", "open", "comment", "edited", message_id="c1")
+        with self.assertRaises(ValueError):
+            self.rounds.message("sample", "open", "question", "x", message_id="../bad")
+        self.rounds.idea_status("sample", "open", "mdef", "planned")
+        with self.assertRaises(ValueError):
+            self.rounds.idea_status("sample", "open", "mabc", "planned")
+        self.rounds.message("sample", "overall", "question", "", message_id="mempty")
+        answers = (self.root / ".review" / "sample" / "answers.md").read_text()
+        self.assertIn("  - You, question mabc: Why so slow?", answers)
+        self.assertIn("  - You, idea mdef [planned]: Cache it.", answers)
+        self.assertIn("  - Claude, reply c1 (to mabc): It decodes twice.", answers)
+        self.assertNotIn("mempty", answers)
+        self.rounds.delete_message("sample", "open", "mabc")
+        self.rounds.delete_message("sample", "open", "mabc")  # gone already is fine
+        with self.assertRaises(ValueError):
+            self.rounds.delete_message("sample", "open", "c1")
+        self.assertEqual(len(self.rounds.state("sample")["items"]["open"]["messages"]), 2)
 
     def test_events(self):
         events = store.Events(self.root / ".review")
@@ -305,6 +339,105 @@ class ServerTest(Temp):
         self.assertEqual((event["type"], event["by"], event["item"], event["client"]), ("round", "you", "open", "abc"))
         conn.close()
 
+    def listen(self):
+        """The page's event stream, read in the background."""
+        import queue as q
+        got = q.Queue()
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"/api/events?t={self.desk.token}&c=page1", headers={"Host": f"127.0.0.1:{self.port}"})
+        r = conn.getresponse()
+
+        def read():
+            try:
+                for line in r.fp:
+                    if line.startswith(b"data: "):
+                        got.put(json.loads(line[6:]))
+            except (OSError, ValueError):
+                pass
+
+        threading.Thread(target=read, daemon=True).start()
+        deadline = time.time() + 3
+        while self.desk.connected() == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        self.addCleanup(conn.close)
+        return got
+
+    def test_hand_back_wakes_wait(self):
+        result = {}
+
+        def waiter():
+            result["answer"] = self.request("GET", "/api/wait?timeout=10")
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        deadline = time.time() + 5
+        while self.desk.waits == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.desk.listening())
+        self.assertTrue(self.request("GET", "/api/state")[1]["listening"])
+        status, sent = self.request("POST", "/api/send", {"round": "sample"})
+        self.assertEqual(status, 200)
+        self.assertTrue(sent["listening"])
+        thread.join(5)
+        status, answer = result["answer"]
+        self.assertEqual([(e["type"], e["round"]) for e in answer["events"]], [("send", "sample")])
+        self.assertEqual(self.request("GET", "/api/wait?timeout=0.2")[1]["events"], [])  # once only
+        rounds = self.request("GET", "/api/state")[1]["rounds"]
+        self.assertTrue(rounds[0]["read"])
+        self.assertIsNotNone(rounds[0]["sent"])
+
+    def test_messages_and_claude(self):
+        events = self.listen()
+        status, out = self.request("POST", "/api/message", {"round": "sample", "item": "open", "id": "mq1",
+                                                            "kind": "question", "text": "Why?", "client": "page1"})
+        self.assertEqual((status, out["message"]["id"]), (200, "mq1"))
+        status, out = self.request("POST", "/api/claude", {"action": "reply", "round": "sample", "item": "open",
+                                                           "text": "Because `x`.", "to": "mq1"})
+        self.assertEqual(status, 200)
+        seen = []
+        deadline = time.time() + 3
+        while time.time() < deadline and not any(e.get("what") == "reply" for e in seen):
+            try:
+                seen.append(events.get(timeout=0.5))
+            except Exception:
+                pass
+        reply = next(e for e in seen if e.get("what") == "reply")
+        self.assertEqual((reply["by"], reply["item"], reply["notify"]["body"]), ("claude", "open", "Because `x`."))
+        state = self.request("GET", "/api/round/sample")[1]["state"]
+        said = state["items"]["open"]["messages"][-1]
+        self.assertEqual(said["html"], "Because <code>x</code>.")
+        status, out = self.request("POST", "/api/claude", {"action": "retest", "round": "sample", "items": ["open"],
+                                                           "text": "Fixed the **jump**."})
+        self.assertEqual((status, out["round"]), (200, 2))
+        state = self.request("GET", "/api/round/sample")[1]["state"]
+        self.assertEqual(state["items"]["open"]["retest"]["html"], "Fixed the <strong>jump</strong>.")
+        self.assertEqual(self.request("POST", "/api/claude", {"action": "dance", "round": "sample"})[0], 400)
+        status, _ = self.request("POST", "/api/message", {"round": "sample", "item": "open", "id": "mq1", "delete": True})
+        self.assertEqual(status, 200)
+
+    def test_desktop_notification_only_without_a_page(self):
+        log = self.root / "notified.txt"
+        fake = self.root / "notify-send"
+        fake.write_text(f"#!/bin/sh\nprintf '%s|' \"$@\" >> {log}\necho\n")
+        fake.chmod(0o755)
+        self.desk.notifier = str(fake)
+        self.desk.pages = {"p1": {"visible": True, "notify": False, "at": time.time()}}
+        self.desk.claude_did("sample", "reply", title="Claude replied", body="Seen")
+        self.desk.pages = {"p1": {"visible": False, "notify": True, "at": time.time()}}
+        self.desk.claude_did("sample", "reply", title="Claude replied", body="Seen")
+        time.sleep(0.5)
+        self.assertFalse(log.exists(), "a page shows it itself")
+        self.desk.pages = {"p1": {"visible": False, "notify": False, "at": time.time()}}
+        self.desk.claude_did("sample", "reply", title="Claude replied", body="Hidden page")
+        self.desk.pages = {}
+        self.desk.claude_did("sample", "new", title="Something new to check", body="No page")
+        deadline = time.time() + 3
+        while time.time() < deadline and (not log.exists() or log.read_text().count("Review Desk") < 2):
+            time.sleep(0.05)
+        sent = log.read_text()
+        self.assertIn("Claude replied|Hidden page|", sent)
+        self.assertIn("Something new to check|No page|", sent)
+
     def test_watcher_sees_claude(self):
         stop = threading.Event()
         seen = []
@@ -321,7 +454,8 @@ class ServerTest(Temp):
             except Exception:
                 pass
         stop.set()
-        self.assertIn({"type": "round", "slug": "second", "by": "claude", "new": True}, seen)
+        self.assertIn({"type": "round", "slug": "second", "by": "claude", "what": "new", "item": None,
+                       "notify": {"title": "Something new to check", "body": "Second"}}, seen)
         self.assertEqual([e["type"] for e in store.Events(self.root / ".review").all()], ["round"])
 
 
@@ -352,6 +486,51 @@ class CommandTest(Temp):
         deadline = time.time() + 5
         while time.time() < deadline and project.runtime(self.root):
             time.sleep(0.1)
+        self.assertIsNone(project.runtime(self.root))
+
+    def test_wait_returns_on_hand_back(self):
+        write_round(self.root, "sample")
+        waiter = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "--project", str(self.root),
+                                   "wait", "--timeout", "20"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not (project.runtime(self.root) and self.listening()):
+                time.sleep(0.2)
+            rt = project.runtime(self.root)
+            self.assertIsNotNone(rt, "wait starts the desk")
+            from desk.cli import call
+            call(rt, "POST", "/api/item", {"round": "sample", "item": "open", "verdict": "works", "note": "Fine here."})
+            call(rt, "POST", "/api/send", {"round": "sample"})
+            out, err = waiter.communicate(timeout=15)
+            self.assertEqual(waiter.returncode, 0, err)
+            self.assertIn("Handed back at", out)
+            self.assertIn("**Works** · 1.1 {#open} · Open the window.", out)
+            self.assertIn("  > Fine here.", out)
+            self.assertIn("review-desk wait", out)
+        finally:
+            waiter.kill()
+            self.run_desk("stop")
+
+    def listening(self):
+        from desk.cli import call
+        try:
+            return call(project.runtime(self.root), "GET", "/api/state")["listening"]
+        except Exception:
+            return False
+
+    def test_claude_without_a_desk(self):
+        write_round(self.root, "sample")
+        out = self.run_desk("reply", "sample", "open", "On it.")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("replied (c1)", out.stdout)
+        out = self.run_desk("retest", "sample", "open", "1.2", "--note", "Both fixed.")
+        self.assertIn("2 item(s) back for another look, round 2", out.stdout)
+        answers = self.run_desk("answers", "sample").stdout
+        self.assertIn("  - Re-test (round 2): Both fixed.", answers)
+        self.assertIn("Claude, reply c1: On it.", answers)
+        bad = self.run_desk("reply", "sample", "nope", "x")
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("no item 'nope'", bad.stderr)
         self.assertIsNone(project.runtime(self.root))
 
     def test_hook_speaks_only_when_answers_wait(self):

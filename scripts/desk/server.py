@@ -9,19 +9,24 @@
   write.
 - A watcher looks at `.review/` every second and tells the page when Claude changed a checklist.
 """
+import html
 import json
 import mimetypes
 import os
 import queue
 import secrets
+import shutil
+import subprocess
 import threading
 import time
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import markdown
 from . import project as proj
-from .store import Events, Rounds
+from .store import LOCK, Events, Rounds
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent.parent / "assets"
@@ -34,6 +39,8 @@ STATIC = {
 }
 MAX_BODY = 4 * 1024 * 1024
 IDLE = 24 * 3600
+WAIT = 25          # seconds one `wait` request waits before the command asks again
+LISTENING = 6      # seconds after a `wait` request that Claude still counts as listening
 
 
 class Desk:
@@ -48,7 +55,12 @@ class Desk:
         self.clients = []
         self.clients_lock = threading.Lock()
         self.presence = {}
+        self.pages = {}            # each open page: is it visible, may it show notifications
+        self.waits = 0             # `wait` requests running now
+        self.last_wait = 0.0
+        self.url = ""
         self.last_seen = time.time()
+        self.notifier = None if quiet else shutil.which("notify-send")
         self.say = (lambda _: None) if quiet else (lambda text: print(text, flush=True))
 
     # -- live updates ------------------------------------------------------------------------
@@ -61,6 +73,28 @@ class Desk:
     def connected(self):
         with self.clients_lock:
             return len(self.clients)
+
+    def listening(self):
+        """Is Claude waiting for a hand-back (a `wait` running, or one a moment ago)?"""
+        return self.waits > 0 or time.time() - self.last_wait < LISTENING
+
+    def claude_did(self, slug, what, item=None, title="", body=""):
+        """Tells the pages what Claude just did, with a notification they show (chime, toast, or
+        a desktop notification while hidden). With no page able to show it, the desktop shows it."""
+        note = {"title": title, "body": body}
+        self.broadcast(type="round", slug=slug, by="claude", what=what, item=item, notify=note)
+        pages = [p for p in self.pages.values() if time.time() - p.get("at", 0) < 120]
+        if self.notifier and not any(p.get("visible") or p.get("notify") for p in pages):
+            threading.Thread(target=self.desktop_notification, args=(title, body), daemon=True).start()
+
+    def desktop_notification(self, title, body):
+        try:
+            out = subprocess.run([self.notifier, "-a", "Review Desk", "-i", "dialog-information",
+                                  "-A", "open=Open", title, body], capture_output=True, text=True, timeout=3600)
+            if out.stdout.strip() == "open" and self.url:
+                webbrowser.open(self.url)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     def snapshot(self):
         """What the watcher compares: each checklist's and the settings' modification time."""
@@ -78,7 +112,11 @@ class Desk:
 
     def watch(self, stop):
         before = self.snapshot()
+        listening = self.listening()
         while not stop.wait(1.0):
+            if self.listening() != listening:
+                listening = self.listening()
+                self.broadcast(type="listening", on=listening)
             after = self.snapshot()
             if after == before:
                 continue
@@ -90,20 +128,54 @@ class Desk:
                     new = slug not in before
                     if new and slug in after:
                         self.events.add("round", round=slug)
-                    self.broadcast(type="round", slug=slug, by="claude", new=new)
+                        try:
+                            title = self.rounds.doc(slug)["title"]
+                        except (OSError, ValueError):
+                            title = slug
+                        self.claude_did(slug, "new", title="Something new to check", body=title)
+                    else:
+                        self.broadcast(type="round", slug=slug, by="claude", what="edit")
             self.broadcast(type="rounds")
             before = after
 
     # -- what the API answers ----------------------------------------------------------------
 
     def state(self):
+        handled = self.events.handled()
+        last_send = {e.get("round"): e["seq"] for e in self.events.all() if e["type"] == "send"}
         rounds = []
         for slug in self.rounds.slugs():
             try:
-                rounds.append(self.rounds.summary(slug))
+                summary = self.rounds.summary(slug)
+                summary["read"] = slug in last_send and handled >= last_send[slug]
+                rounds.append(summary)
             except (OSError, ValueError) as e:
                 rounds.append({"slug": slug, "title": slug, "error": str(e)})
-        return {"project": proj.settings(self.root) | {"path": str(self.root)}, "rounds": rounds}
+        return {"project": proj.settings(self.root) | {"path": str(self.root)}, "rounds": rounds,
+                "listening": self.listening()}
+
+    def wait(self, timeout):
+        """What Claude hasn't had yet (hand-backs, answers), as soon as there is some; marked as
+        had when it goes out, so it goes out once."""
+        self.waits += 1
+        try:
+            deadline = time.time() + timeout
+            with self.events.changed:
+                while True:
+                    waiting = self.events.waiting()
+                    if waiting:
+                        self.events.mark(max(e["seq"] for e in waiting))
+                        break
+                    left = deadline - time.time()
+                    if left <= 0:
+                        break
+                    self.events.changed.wait(left)
+        finally:
+            self.waits -= 1
+            self.last_wait = time.time()
+        if waiting:
+            self.broadcast(type="handled", rounds=sorted({e.get("round") for e in waiting if e.get("round")}))
+        return waiting
 
 
 def handler_for(desk, server_ref):
@@ -176,9 +248,12 @@ def handler_for(desk, server_ref):
                 if path.startswith("/api/round/"):
                     slug = path.removeprefix("/api/round/")
                     doc = desk.rounds.doc(slug)
-                    return self.send_json(200, {"doc": doc, "state": desk.rounds.state(slug, doc)})
+                    return self.send_json(200, {"doc": doc, "state": present(desk.rounds.state(slug, doc))})
                 if path == "/api/events":
-                    return self.stream()
+                    return self.stream(query.get("c", [""])[0][:16])
+                if path == "/api/wait":
+                    timeout = min(max(float(query.get("timeout", [WAIT])[0]), 0), 120)
+                    return self.send_json(200, {"events": desk.wait(timeout)})
             except (OSError, ValueError) as e:
                 return self.fail(400, str(e))
             self.reply(404, "nothing here", "text/plain")
@@ -196,12 +271,14 @@ def handler_for(desk, server_ref):
             kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
             self.reply(200, target.read_bytes(), kind)
 
-        def stream(self):
+        def stream(self, client):
             """Server-sent events: what changed, as it happens, with a comment every 15 s to keep
             the line open."""
             q = queue.Queue()
             with desk.clients_lock:
                 desk.clients.append(q)
+            if client:
+                desk.pages.setdefault(client, {"visible": True, "notify": False, "at": time.time()})
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
@@ -223,6 +300,7 @@ def handler_for(desk, server_ref):
             finally:
                 with desk.clients_lock:
                     desk.clients.remove(q)
+                desk.pages.pop(client, None)
                 self.close_connection = True
 
         # -- POST ----------------------------------------------------------------------------
@@ -255,9 +333,35 @@ def handler_for(desk, server_ref):
                 overall = rounds.set_overall(slug, data["note"])
                 desk.broadcast(type="round", slug=slug, by="you", item="overall", client=data.get("client"))
                 return {"overall": overall}
+            if path == "/api/message":
+                if data.get("delete"):
+                    rounds.delete_message(slug, data["item"], data["id"])
+                    message = None
+                else:
+                    message = rounds.message(slug, data["item"], data["kind"], data["text"],
+                                             reply_to=data.get("to"), message_id=data["id"])
+                desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
+                return {"message": message}
+            if path == "/api/send":
+                sent = rounds.send(slug)
+                desk.events.add("send", round=slug)
+                desk.broadcast(type="round", slug=slug, by="you", client=data.get("client"))
+                desk.broadcast(type="rounds")
+                return {"sent": sent, "listening": desk.listening()}
             if path == "/api/presence":
-                desk.presence = {"round": slug, "item": data.get("item"), "at": time.strftime("%H:%M:%S")}
+                if data.get("item") is not None:
+                    desk.presence = {"round": slug, "item": data.get("item"), "at": time.strftime("%H:%M:%S")}
+                if data.get("client"):
+                    desk.pages[str(data["client"])[:16]] = {"visible": bool(data.get("visible", True)),
+                                                           "notify": bool(data.get("notify")), "at": time.time()}
                 return {"ok": True}
+            if path == "/api/claude":
+                result, notice = claude_action(rounds, data)
+                if notice:
+                    desk.claude_did(slug, **notice)
+                else:
+                    desk.broadcast(type="round", slug=slug, by="claude", what=data.get("action"), item=data.get("item"))
+                return result
             if path == "/api/quit":
                 threading.Thread(target=server_ref[0].shutdown, daemon=True).start()
                 return {"ok": True}
@@ -267,6 +371,48 @@ def handler_for(desk, server_ref):
             pass
 
     return Handler
+
+
+def claude_action(rounds, data):
+    """What Claude does through the command: a reply in a thread, items back for another look,
+    its word on an idea. Returns the result and what to tell you about it (None: nothing)."""
+    slug, action = data.get("round", ""), data.get("action")
+    title = rounds.doc(slug)["title"]
+    if action == "reply":
+        m = rounds.message(slug, data["item"], "reply", data["text"], sender="claude", reply_to=data.get("to"))
+        first = (data["text"].strip().splitlines() or [""])[0][:140]
+        return {"message": m}, {"what": "reply", "item": data["item"], "title": f"Claude replied · {title}", "body": first}
+    if action == "retest":
+        items = list(data["items"])
+        n = rounds.retest(slug, items, data.get("text", ""))
+        count = f"{len(items)} item{'s' if len(items) != 1 else ''}"
+        return {"round": n}, {"what": "retest", "item": items[0] if items else None,
+                              "title": f"{count} back for another look", "body": f"{title} · round {n}"}
+    if action == "idea":
+        return {"message": rounds.idea_status(slug, data["item"], data["id"], data["status"])}, None
+    raise ValueError(f"Claude can't {action!r} here")
+
+
+def rich(text):
+    """Claude's own words on the page: inline Markdown, line breaks kept."""
+    return "<br>".join(markdown.inline(line) for line in text.split("\n"))
+
+
+def present(state):
+    """A round's answers for the page: Claude's messages and notes as HTML too."""
+    threads = [a["messages"] for a in state["items"].values()] + [state["overall"]["messages"]]
+    for thread in threads:
+        for m in thread:
+            if m["from"] == "claude":
+                m["html"] = rich(m["text"])
+    for a in state["items"].values():
+        if a["retest"] and a["retest"].get("note"):
+            a["retest"]["html"] = rich(a["retest"]["note"])
+        for h in a["history"]:
+            h["html"] = html.escape(h["note"]).replace("\n", "<br>")
+            if (h.get("retest") or {}).get("note"):
+                h["retest_html"] = rich(h["retest"]["note"])
+    return state
 
 
 def page(desk):
@@ -303,6 +449,7 @@ def serve(root, port=None):
     server = make_server(root, port)
     desk = server.desk
     url = f"http://127.0.0.1:{server.server_port}/"
+    desk.url = url
     runtime = desk.folder / ".runtime.json"
     proj.write_json(runtime, {"pid": os.getpid(), "port": server.server_port, "token": desk.token, "url": url,
                               "started": time.strftime("%Y-%m-%d %H:%M:%S")})

@@ -5,6 +5,15 @@ folder (the git repository, or the folder itself), or the one `--project` names.
     stop | open            stop it | show it in the browser
     status [--hook]        rounds, answers waiting, where you are (--hook: one line, only when
                            answers wait, for a session-start hook)
+    wait [--timeout S]     returns when you hand a round back (run it in the background); prints
+                           the answers
+    answers ROUND          a round's answers as they are now
+    reply ROUND ITEM TEXT [--to MESSAGE]
+                           Claude's reply in an item's thread (ITEM `overall` for the round's own)
+    retest ROUND ITEM... [--note TEXT]
+                           items back for another look, with what changed
+    idea ROUND ITEM MESSAGE STATUS
+                           an idea planned, done, declined (or new)
     config [--title T] [--accent #rrggbb]
     serve                  the server itself (what start runs in the background)
 """
@@ -136,6 +145,70 @@ def status(root, hook=False):
         print(f"  waiting for Claude: {e['type']} {e.get('round') or e.get('question', '')} at {e['at']}")
 
 
+def show_events(root, events):
+    """What `wait` prints: each hand-back with its answers, each answered question."""
+    folder = proj.review_dir(root)
+    rounds = Rounds(folder)
+    shown = set()
+    for e in events:
+        if e["type"] == "send" and e.get("round") not in shown:
+            slug = e["round"]
+            shown.add(slug)
+            print(f"Handed back at {e['at']}: {slug}. The answers ({folder / slug / 'answers.md'}):\n")
+            try:
+                print(answers_text(rounds, slug))
+            except (OSError, ValueError) as err:
+                print(f"(couldn't read them: {err})")
+            print()
+        elif e["type"] == "answer":
+            print(f"Answered at {e['at']}: {e.get('question', '?')}")
+            print(json.dumps(e.get("answers", {}), ensure_ascii=False, indent=2))
+            print()
+    print("Run `review-desk wait` again in the background to hear the next hand-back.")
+
+
+def answers_text(rounds, slug):
+    """A round's answers.md, written fresh from its state."""
+    from .store import answers_md
+    doc = rounds.doc(slug)
+    return answers_md(slug, doc, rounds.state(slug, doc))
+
+
+def wait(root, timeout=None):
+    """Waits for a hand-back. The desk starts if it isn't running (without opening a page)."""
+    rt = start(root, open_browser=False, quiet=True)
+    deadline = None if timeout is None else time.time() + timeout
+    misses = 0
+    while deadline is None or time.time() < deadline:
+        step = 25 if deadline is None else max(0.0, min(25, deadline - time.time()))
+        try:
+            events = call(rt, "GET", f"/api/wait?timeout={step:.1f}", timeout=step + 15)["events"]
+            misses = 0
+        except (OSError, RuntimeError, ValueError):
+            # The desk went away: maybe restarted on purpose. Look a little longer, then stop.
+            misses += 1
+            if misses > 12:
+                print("The desk stopped, so nothing can be handed back. `review-desk start` starts it again.")
+                return
+            time.sleep(5)
+            rt = running(root) or rt
+            continue
+        if events:
+            show_events(root, events)
+            return
+    print("Nothing handed back yet. Run `review-desk wait` again to keep listening.")
+
+
+def claude(root, body):
+    """One of Claude's actions: through the desk when it runs (the page updates and tells you),
+    straight into the files otherwise."""
+    rt = running(root)
+    if rt:
+        return call(rt, "POST", "/api/claude", body)
+    from .server import claude_action
+    return claude_action(Rounds(proj.ensure(root)), body)[0]
+
+
 def config(root, title=None, accent=None):
     proj.ensure(root)
     if accent and not (accent.startswith("#") and len(accent) in (4, 7)):
@@ -157,6 +230,24 @@ def main(argv=None):
     sub.add_parser("open", parents=[common])
     p = sub.add_parser("status", parents=[common])
     p.add_argument("--hook", action="store_true")
+    p = sub.add_parser("wait", parents=[common])
+    p.add_argument("--timeout", type=float, help="give up after this many seconds (default: never)")
+    p = sub.add_parser("answers", parents=[common])
+    p.add_argument("round")
+    p = sub.add_parser("reply", parents=[common])
+    p.add_argument("round")
+    p.add_argument("item")
+    p.add_argument("text", help="the reply (- reads it from stdin)")
+    p.add_argument("--to", help="the message it answers")
+    p = sub.add_parser("retest", parents=[common])
+    p.add_argument("round")
+    p.add_argument("items", nargs="+")
+    p.add_argument("--note", default="", help="what changed (- reads it from stdin)")
+    p = sub.add_parser("idea", parents=[common])
+    p.add_argument("round")
+    p.add_argument("item")
+    p.add_argument("message")
+    p.add_argument("status", choices=("new", "planned", "done", "declined"))
     p = sub.add_parser("config", parents=[common])
     p.add_argument("--title")
     p.add_argument("--accent")
@@ -175,6 +266,26 @@ def main(argv=None):
         print(rt["url"])
     elif args.command == "status":
         status(root, hook=args.hook)
+    elif args.command == "wait":
+        wait(root, args.timeout)
+    elif args.command == "answers":
+        print(answers_text(Rounds(proj.review_dir(root)), args.round))
+    elif args.command in ("reply", "retest", "idea"):
+        try:
+            if args.command == "reply":
+                text = sys.stdin.read() if args.text == "-" else args.text
+                out = claude(root, {"action": "reply", "round": args.round, "item": args.item, "text": text, "to": args.to})
+                print(f"replied ({out['message']['id']})")
+            elif args.command == "retest":
+                note = sys.stdin.read() if args.note == "-" else args.note
+                out = claude(root, {"action": "retest", "round": args.round, "items": args.items, "text": note})
+                print(f"{len(args.items)} item(s) back for another look, round {out['round']}")
+            else:
+                claude(root, {"action": "idea", "round": args.round, "item": args.item, "id": args.message,
+                              "status": args.status})
+                print(f"idea {args.message}: {args.status}")
+        except (RuntimeError, ValueError, KeyError) as e:
+            sys.exit(f"review-desk {args.command}: {e}")
     elif args.command == "config":
         config(root, args.title, args.accent)
     elif args.command == "serve":
