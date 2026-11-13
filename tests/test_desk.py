@@ -88,7 +88,7 @@ class ParserTest(unittest.TestCase):
         self.assertTrue(items[3]["done"])
         self.assertIn('src="/files/sample/files/before.png"', items[1]["html"])
         self.assertIn('data-path="docs/a.md"', items[1]["html"])
-        self.assertEqual(doc["codes"], {"c1": "echo hello"})
+        self.assertEqual(doc["codes"], {"c1": {"lang": "bash", "text": "echo hello"}})
         self.assertTrue(doc["sections"][0]["blocks"][1]["runnable"])
 
     def test_names_stay_unique(self):
@@ -437,6 +437,103 @@ class ServerTest(Temp):
         sent = log.read_text()
         self.assertIn("Claude replied|Hidden page|", sent)
         self.assertIn("Something new to check|No page|", sent)
+
+    def upload(self, item, kind, data, name, label=""):
+        from urllib.parse import urlencode
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        q = urlencode({"round": "sample", "item": item, "kind": kind, "name": name, "label": label})
+        conn.request("POST", f"/api/upload?{q}", data, {"Host": f"127.0.0.1:{self.port}", "X-Desk-Token": self.desk.token})
+        r = conn.getresponse()
+        out = (r.status, json.loads(r.read()))
+        conn.close()
+        return out
+
+    def test_attachments(self):
+        status, out = self.upload("1.2", "screenshot", b"PNGDATA", "shot.png", "the bar")
+        self.assertEqual((status, out["file"]["name"]), (200, "1-2-screenshot.png"))
+        status, out = self.upload("1.2", "screenshot", b"PNG2", "x.png")
+        self.assertEqual(out["file"]["name"], "1-2-screenshot-2.png")
+        status, out = self.upload("open", "file", b"<script>alert(1)</script>", "../../evil page.html")
+        self.assertEqual(out["file"]["name"], "open-evil-page.html")
+        self.assertEqual(self.upload("nope", "file", b"x", "a.txt")[0], 400)
+        self.assertEqual(self.upload("open", "virus", b"x", "a.txt")[0], 400)
+        self.assertEqual(self.upload("open", "file", b"", "a.txt")[0], 400)
+        files = sorted((self.root / ".review" / "sample" / "files").iterdir())
+        self.assertNotIn("a.txt", [f.name for f in files])
+        state = self.request("GET", "/api/round/sample")[1]["state"]
+        self.assertEqual([f["name"] for f in state["items"]["1.2"]["files"]], ["1-2-screenshot.png", "1-2-screenshot-2.png"])
+        self.assertEqual(state["items"]["1.2"]["files"][0]["label"], "the bar")
+        self.assertIn("  - Screenshot: [1-2-screenshot.png](files/1-2-screenshot.png) the bar",
+                      (self.root / ".review" / "sample" / "answers.md").read_text())
+        # Served as plain text in a sandbox, never as a page of the desk's own origin.
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/files/sample/files/open-evil-page.html", headers={"Host": f"127.0.0.1:{self.port}"})
+        r = conn.getresponse()
+        r.read()
+        self.assertTrue(r.getheader("Content-Type").startswith("text/plain"))
+        self.assertEqual(r.getheader("Content-Security-Policy"), "sandbox")
+        # Ranges, for scrubbing recordings.
+        conn.request("GET", "/files/sample/files/1-2-screenshot.png",
+                     headers={"Host": f"127.0.0.1:{self.port}", "Range": "bytes=2-4"})
+        r = conn.getresponse()
+        self.assertEqual((r.status, r.read(), r.getheader("Content-Range")), (206, b"GDA", "bytes 2-4/7"))
+        conn.close()
+        status, _ = self.request("POST", "/api/file/remove", {"round": "sample", "item": "1.2", "name": "1-2-screenshot-2.png"})
+        self.assertEqual(status, 200)
+        self.assertFalse((self.root / ".review" / "sample" / "files" / "1-2-screenshot-2.png").exists())
+
+    def test_run(self):
+        events = self.listen()
+        self.assertEqual(self.request("POST", "/api/run", {"round": "sample", "code": "c9"})[0], 400)
+        status, out = self.request("POST", "/api/run", {"round": "sample", "code": "c1"})
+        self.assertEqual((status, out["run"]["status"]), (200, "running"))
+        seen = []
+        deadline = time.time() + 5
+        while time.time() < deadline and not any(e.get("status") == "done" for e in seen):
+            try:
+                seen.append(events.get(timeout=0.5))
+            except Exception:
+                pass
+        lines = [line for e in seen if e.get("type") == "run" for line in e.get("lines", [])]
+        self.assertEqual(lines, ["hello"])
+        self.assertEqual([e["exit"] for e in seen if e.get("status") == "done"], [0])
+        runs = self.request("GET", "/api/runs?round=sample")[1]["runs"]
+        self.assertEqual([(r["code"], r["lines"]) for r in runs], [("c1", ["hello"])])
+
+    def test_run_stops_everything(self):
+        write_round(self.root, "slow", "# Slow\n\n```bash\nsleep 30 & sleep 30; echo never\n```\n\n## A\n\n- [ ] x\n")
+        status, out = self.request("POST", "/api/run", {"round": "slow", "code": "c1"})
+        run = self.desk.runs.runs[out["run"]["id"]]
+        time.sleep(0.3)
+        self.request("POST", "/api/run/stop", {"id": out["run"]["id"]})
+        deadline = time.time() + 5
+        while time.time() < deadline and run["status"] == "running":
+            time.sleep(0.05)
+        self.assertEqual(run["status"], "stopped")
+        alive = subprocess.run(["pgrep", "-g", str(run["proc"].pid)], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(alive, "", "the background sleep ended too")
+
+    def test_not_runnable(self):
+        write_round(self.root, "py", "# P\n\n```python\nprint(1)\n```\n\n## A\n\n- [ ] x\n")
+        status, out = self.request("POST", "/api/run", {"round": "py", "code": "c1"})
+        self.assertEqual((status, out["error"]), (400, "only bash and sh blocks run"))
+
+    def test_logs_and_viewer(self):
+        (self.root / "app.log").write_text("".join(f"line {n}\n" for n in range(1000)))
+        write_round(self.root, "logged", "---\nlog: app.log, missing.log\n---\n# L\n\n## A\n\n- [ ] x\n")
+        logs = self.request("GET", "/api/log?round=logged")[1]["logs"]
+        self.assertEqual(logs[0]["name"], "app.log")
+        self.assertEqual(logs[0]["lines"][-1], "line 999")
+        self.assertEqual(len(logs[0]["lines"]), 400)
+        self.assertIn("error", logs[1])
+        self.assertEqual(self.request("GET", "/api/log?round=sample")[1]["logs"], [])
+        status, out = self.request("GET", "/api/source?path=app.log")
+        self.assertEqual((status, out["path"]), (200, "app.log"))
+        self.assertEqual(self.request("GET", "/api/source?path=../../etc/passwd")[0], 400)
+        self.assertEqual(self.request("GET", "/api/source?path=/etc/passwd")[0], 400)
+        (self.root / "blob.bin").write_bytes(b"\0\1\2")
+        self.assertEqual(self.request("GET", "/api/source?path=blob.bin")[0], 400)
+        self.assertEqual(self.request("GET", "/api/commit?ref=HEAD;rm")[0], 400)
 
     def test_watcher_sees_claude(self):
         stop = threading.Event()

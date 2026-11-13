@@ -110,7 +110,7 @@ class Reader:
 
     def code(self, lang, text):
         code_id = f"c{len(self.codes) + 1}"
-        self.codes[code_id] = text
+        self.codes[code_id] = {"lang": lang, "text": text}
         return {"type": "code", "id": code_id, "lang": lang, "text": text, "runnable": lang.lower() in RUNNABLE}
 
     def name(self, wanted, fallback):

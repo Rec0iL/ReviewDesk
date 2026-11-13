@@ -9,7 +9,7 @@ Plan: `~/.claude/plans/review-desk.md` (approved 2026-11-13). One commit per pha
 - [x] 2. The conversation: Send to Claude, `wait`, `answers.md`, `status --hook`; questions and
       ideas on items, severity; threads (`reply`), re-test rounds with history (`retest`);
       notifications and the chime, "where you are"
-- [ ] 3. Attachments and actions: screenshots with the markup editor, screen recordings, log lines,
+- [x] 3. Attachments and actions: screenshots with the markup editor, screen recordings, log lines,
       any file; Run buttons with live output and Stop; links to files and the commit, Claude's
       pictures in items
 - [ ] 4. Ideas board, question cards (`ask`), summary to copy
@@ -35,3 +35,13 @@ reply arrived live with a toast; replies, questions and ideas save as you type. 
 in the banner and move into the history with the next round (not copied into the thread). The
 desktop notification (notify-send, with Open) fires only when no page can show it; tested with a
 stand-in so nothing popped up.
+
+**Phase 3** (2026-11-13): 34 tests on both Pythons. Checked live: Run streams a checklist's
+command into the page, survives a reload, Stop ends the whole process group (tested), Attach lines
+picks a range into a log attachment; the markup editor draws arrows, boxes and blur (a secret
+became unreadable) and attaches with a label; a dropped file attaches to its item; the viewer
+shows `notes/how.md:3` on its line and the commit with its diff; `answers.md` links every file.
+Uploads are named after their item, served as plain text in a sandbox when they are text, with
+ranges for recordings. Code blocks got a header row (language, Run, Copy); the accent has a darker
+text shade in the light theme. Not testable here: taking a screenshot and recording the screen
+need someone to pick a window in the browser's share dialog: part of the user's check.

@@ -14,6 +14,7 @@ import json
 import mimetypes
 import os
 import queue
+import re
 import secrets
 import shutil
 import subprocess
@@ -24,8 +25,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import markdown
+from . import attach, markdown
 from . import project as proj
+from .runs import Runs
 from .store import LOCK, Events, Rounds
 
 HERE = Path(__file__).resolve().parent
@@ -34,6 +36,7 @@ STATIC = {
     "/desk.css": ("page/desk.css", "text/css; charset=utf-8"),
     "/desk.js": ("page/desk.js", "text/javascript; charset=utf-8"),
     "/i18n.js": ("page/i18n.js", "text/javascript; charset=utf-8"),
+    "/extras.js": ("page/extras.js", "text/javascript; charset=utf-8"),
     "/fonts/plex-sans.ttf": ("fonts/IBMPlexSans-Variable.ttf", "font/ttf"),
     "/fonts/plex-mono.ttf": ("fonts/IBMPlexMono-Regular.ttf", "font/ttf"),
 }
@@ -61,6 +64,7 @@ class Desk:
         self.url = ""
         self.last_seen = time.time()
         self.notifier = None if quiet else shutil.which("notify-send")
+        self.runs = Runs(self.root, self.rounds, self.broadcast)
         self.say = (lambda _: None) if quiet else (lambda text: print(text, flush=True))
 
     # -- live updates ------------------------------------------------------------------------
@@ -210,6 +214,10 @@ def handler_for(desk, server_ref):
             port = server_ref[0].server_port
             return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
 
+        def local(self):
+            """A request from this computer (the phone's page may not run commands)."""
+            return self.client_address[0] in ("127.0.0.1", "::1") and self.server is server_ref[0]
+
         def token_ok(self, query):
             return secrets.compare_digest(
                 self.headers.get("X-Desk-Token") or query.get("t", [""])[0], desk.token)
@@ -251,6 +259,22 @@ def handler_for(desk, server_ref):
                     return self.send_json(200, {"doc": doc, "state": present(desk.rounds.state(slug, doc))})
                 if path == "/api/events":
                     return self.stream(query.get("c", [""])[0][:16])
+                if path == "/api/runs":
+                    return self.send_json(200, {"runs": desk.runs.of(query.get("round", [""])[0])})
+                if path == "/api/log":
+                    slug = query.get("round", [""])[0]
+                    sources = attach.log_sources(desk.root, desk.rounds.doc(slug))
+                    out = []
+                    for src in sources:
+                        try:
+                            out.append({"name": src["name"], "lines": attach.tail(src["path"])})
+                        except OSError as e:
+                            out.append({"name": src["name"], "error": e.strerror or str(e), "lines": []})
+                    return self.send_json(200, {"logs": out})
+                if path == "/api/source":
+                    return self.send_json(200, attach.source(desk.root, query.get("path", [""])[0]))
+                if path == "/api/commit":
+                    return self.send_json(200, attach.commit(desk.root, query.get("ref", [""])[0]))
                 if path == "/api/wait":
                     timeout = min(max(float(query.get("timeout", [WAIT])[0]), 0), 120)
                     return self.send_json(200, {"events": desk.wait(timeout)})
@@ -269,7 +293,51 @@ def handler_for(desk, server_ref):
             if not inner or base not in target.parents or not target.is_file():
                 return self.reply(404, "nothing here", "text/plain")
             kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-            self.reply(200, target.read_bytes(), kind)
+            if kind.startswith("text/") or kind in ("application/json", "application/javascript"):
+                # Shown as plain text, never as a page or a script of this origin.
+                kind = "text/plain; charset=utf-8"
+            self.send_file(target, kind)
+
+        def send_file(self, target, kind):
+            """A file in pieces, with ranges (so recordings can be scrubbed)."""
+            size = target.stat().st_size
+            start, end, status = 0, size - 1, 200
+            wanted = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range", ""))
+            if wanted and size:
+                first, last = wanted.groups()
+                if first:
+                    start, end = int(first), min(int(last), size - 1) if last else size - 1
+                elif last:
+                    start = max(0, size - int(last))
+                if start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = 206
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(end - start + 1 if size else 0))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "sandbox")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            if not size:
+                return
+            with open(target, "rb") as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(attach.CHUNK, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
 
         def stream(self, client):
             """Server-sent events: what changed, as it happens, with a comment every 15 s to keep
@@ -311,8 +379,11 @@ def handler_for(desk, server_ref):
             if not self.ours() or not self.token_ok(parse_qs(url.query)):
                 return self.fail(403, "not allowed")
             try:
-                data = self.body()
-                result = self.act(url.path, data)
+                if url.path == "/api/upload":
+                    result = self.upload(parse_qs(url.query))
+                else:
+                    data = self.body()
+                    result = self.act(url.path, data)
             except (ValueError, KeyError, TypeError) as e:
                 return self.fail(400, str(e))
             except OSError as e:
@@ -320,6 +391,23 @@ def handler_for(desk, server_ref):
             if result is None:
                 return self.reply(404, "nothing here", "text/plain")
             self.send_json(200, result)
+
+        def upload(self, query):
+            """An attachment: the file is the body, what it is goes in the query."""
+            get = lambda key, default="": query.get(key, [default])[0]
+            slug, item_id, kind = get("round"), get("item"), get("kind", "file")
+            if item_id != "overall":
+                desk.rounds.state(slug)["items"][item_id]  # the item exists (KeyError otherwise)
+            folder = desk.rounds.path(slug, "files")
+            length = int(self.headers.get("Content-Length") or 0)
+            name = attach.save_upload(self.rfile, length, folder, item_id, kind, get("name"))
+            try:
+                entry = desk.rounds.add_file(slug, item_id, name, kind, get("label"))
+            except ValueError:
+                (folder / name).unlink(missing_ok=True)
+                raise
+            desk.broadcast(type="round", slug=slug, by="you", item=item_id, client=get("client"))
+            return {"file": entry}
 
         def act(self, path, data):
             rounds = desk.rounds
@@ -342,6 +430,17 @@ def handler_for(desk, server_ref):
                                              reply_to=data.get("to"), message_id=data["id"])
                 desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
                 return {"message": message}
+            if path == "/api/file/remove":
+                if rounds.remove_file(slug, data["item"], data["name"]):
+                    (rounds.path(slug, "files") / os.path.basename(data["name"])).unlink(missing_ok=True)
+                desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
+                return {"ok": True}
+            if path == "/api/run":
+                if not self.local():
+                    raise ValueError("Run works on this computer's page only")
+                return {"run": desk.runs.start(slug, data["code"])}
+            if path == "/api/run/stop":
+                return {"run": desk.runs.stop(data["id"])}
             if path == "/api/send":
                 sent = rounds.send(slug)
                 desk.events.add("send", round=slug)
@@ -467,6 +566,7 @@ def serve(root, port=None):
         server.serve_forever()
     finally:
         stop.set()
+        desk.runs.stop_all()
         server.server_close()
         if (proj.read_json(runtime, {}) or {}).get("pid") == os.getpid():
             runtime.unlink(missing_ok=True)

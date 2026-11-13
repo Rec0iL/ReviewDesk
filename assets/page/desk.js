@@ -22,6 +22,18 @@ const ICONS = {
   "bell-off": '<path d="M6 16.5V11a6 6 0 0 1 9.4-4.9M18 11v5.5l1.5 1.5H8"/><path d="M10 20.5h4"/><path d="M4 4l16 16"/>',
   sound: '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
   "sound-off": '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
+  attach: '<path d="M15.5 7.5l-6.8 6.8a2 2 0 0 0 2.8 2.8l7-7a4 4 0 0 0-5.6-5.6l-7 7a6 6 0 0 0 8.5 8.5l6-6"/>',
+  camera: '<path d="M4 8.5h3l1.8-2.5h6.4L17 8.5h3v10H4z"/><circle cx="12" cy="13" r="3.4"/>',
+  image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19.5 17"/>',
+  record: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.2" fill="currentColor"/>',
+  log: '<path d="M6 6.5h12M6 10.5h12M6 14.5h8M6 18.5h10"/>',
+  file: '<path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/>',
+  arrow: '<path d="M5 19L18 6"/><path d="M10 6h8v8"/>',
+  box: '<rect x="4.5" y="6" width="15" height="12" rx="1"/>',
+  blur: '<path d="M4 4h4v4H4zM12 4h4v4h-4zM8 8h4v4H8zM16 8h4v4h-4zM4 12h4v4H4zM12 12h4v4h-4zM8 16h4v4H8zM16 16h4v4h-4z" fill="currentColor" stroke="none"/>',
+  undo: '<path d="M8.5 8.5H15a4.5 4.5 0 0 1 0 9h-5"/><path d="M11.5 5L8 8.5l3.5 3.5"/>',
 };
 const LAST = "review-desk:last";
 const LANG = "review-desk:lang";
@@ -42,6 +54,7 @@ const S = {
   live: false,
   handing: false,
   audio: null,
+  runs: new Map(),      // the open round's Run output, by code block
 };
 
 // -- words and small helpers ---------------------------------------------------------------------
@@ -169,6 +182,7 @@ async function openRound(slug, { keepPlace = false } = {}) {
   const round = overlay(await api(`/api/round/${encodeURIComponent(slug)}`), slug);
   S.current = slug;
   S.round = round;
+  if (moved) await loadRuns();
   remember({ round: slug });
   renderMain({ keepPlace: keepPlace && !moved });
   syncSide();
@@ -222,6 +236,7 @@ function connect() {
 
 async function onEvent(event) {
   if (event.client === CLIENT) return; // our own change coming back
+  if (event.type === "run") return onRun(event);
   if (event.type === "listening") {
     if (S.state) S.state.listening = event.on;
     refreshHead();
@@ -467,9 +482,24 @@ function card(id) {
 
 function applyProject() {
   const project = (S.state && S.state.project) || BOOT.project || {};
-  if (project.accent) document.documentElement.style.setProperty("--accent", project.accent);
+  if (project.accent) {
+    const root = document.documentElement.style;
+    root.setProperty("--accent", project.accent);
+    // Text on the accent: dark on a light accent, white on a dark one.
+    root.setProperty("--accent-ink", luminance(project.accent) > 0.4 ? "#0f1714" : "#ffffff");
+  }
   $("#project").textContent = project.title || "";
   document.title = `${project.title ? project.title + " · " : ""}${t("brand")}`;
+}
+
+function luminance(hex) {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = [...h].map((c) => c + c).join("");
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const v = parseInt(h.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 function ring(counts) {
@@ -546,7 +576,9 @@ function renderHead(head) {
   const meta = [];
   if (doc.about) meta.push(esc(t("about", { t: doc.about })));
   if (state.round > 1) meta.push(esc(t("round", { n: state.round })));
-  if (doc.meta && doc.meta.commit) meta.push(`<span class="mono">${esc(t("commit", { c: doc.meta.commit }))}</span>`);
+  if (doc.meta && doc.meta.commit) {
+    meta.push(`<button type="button" class="link mono commit-link" data-ref="${esc(doc.meta.commit)}" title="${esc(t("commit.show"))}">${esc(t("commit", { c: doc.meta.commit }))}</button>`);
+  }
   meta.push(state.sent
     ? `${esc(t("sent", { t: clock(state.sent) }))} · <span class="${entry.read ? "read" : ""}">${esc(entry.read ? t("read") : t("unread"))}</span>`
     : esc(t("not.sent")));
@@ -589,10 +621,11 @@ function refreshTotals() {
 
 function codeBlock(b) {
   const box = el("div", "code");
+  box.dataset.code = b.id;
   const pre = el("pre");
   pre.textContent = b.text;
   const tools = el("div", "tools");
-  const copy = button(null, esc(t("copy")), async () => {
+  const copy = button("quiet tiny", esc(t("copy")), async () => {
     try {
       await navigator.clipboard.writeText(b.text);
       copy.textContent = t("copied");
@@ -605,8 +638,10 @@ function codeBlock(b) {
     }
     setTimeout(() => (copy.textContent = t("copy")), 1400);
   });
+  tools.append(el("span", "lang", esc(b.lang || "")));
+  if (b.runnable && BOOT.local !== false) tools.append(runButton(b));
   tools.append(copy);
-  box.append(pre, tools);
+  box.append(tools, pre);
   return box;
 }
 
@@ -702,6 +737,10 @@ function threadBlock(id, list) {
     add.append(
       button("quiet small-button", `${icon("question")}<span>${esc(t("add.question"))}</span>`, () => addMessage(id, list, "question", draw)),
       button("quiet small-button", `${icon("idea")}<span>${esc(t("add.idea"))}</span>`, () => addMessage(id, list, "idea", draw)),
+      button("quiet small-button", `${icon("attach")}<span>${esc(t("attach"))}</span>`, (e) => {
+        e.stopPropagation();
+        attachMenu(e.currentTarget, id);
+      }),
     );
     wrap.append(add);
   };
@@ -789,7 +828,9 @@ function itemCard(b) {
     autosize(parts.note);
     change(b.id, { note: a.note }, 600);
   };
-  answer.append(parts.note, threadBlock(b.id, a.messages));
+  answer.append(parts.note);
+  if (a.files.length) answer.append(filesRow(b.id, a.files));
+  answer.append(threadBlock(b.id, a.messages));
   if (a.history.length) answer.append(historyBlock(a));
   body.append(answer);
 
@@ -880,10 +921,13 @@ function renderMain({ keepPlace = false } = {}) {
     autosize(area);
     change("overall", { note: area.value }, 600);
   };
-  overall.append(area, threadBlock("overall", S.round.state.overall.messages));
+  overall.append(area);
+  if (S.round.state.overall.files.length) overall.append(filesRow("overall", S.round.state.overall.files));
+  overall.append(threadBlock("overall", S.round.state.overall.messages));
   wrap.append(overall);
 
   main.replaceChildren(wrap);
+  for (const code of S.runs.keys()) drawRun(code);
   updateSectionCounts();
   requestAnimationFrame(() => autosize(area));
 
@@ -928,6 +972,7 @@ $("main").addEventListener("scroll", () => {
 }, { passive: true });
 
 (async function start() {
+  initExtras();
   renderWords();
   try {
     await loadState();

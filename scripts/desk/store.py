@@ -201,6 +201,30 @@ class Rounds:
 
         return self.edit(slug, change)
 
+    def add_file(self, slug, item_id, name, kind, label=""):
+        """An attachment (already in the round's `files/`) on an item or the round."""
+
+        def change(doc, state):
+            files = files_of(state, item_id)
+            entry = {"name": name, "kind": kind, "at": now()}
+            if label:
+                entry["label"] = text(label)[:300]
+            files.append(entry)
+            return entry
+
+        return self.edit(slug, change)
+
+    def remove_file(self, slug, item_id, name):
+        """Takes an attachment off its item; returns whether it was there."""
+
+        def change(doc, state):
+            files = files_of(state, item_id)
+            before = len(files)
+            files[:] = [f for f in files if f["name"] != name]
+            return len(files) != before
+
+        return self.edit(slug, change)
+
     def send(self, slug):
         """The round handed back to Claude."""
         return self.edit(slug, lambda doc, state: state.update(sent=now()) or state["sent"])
@@ -241,6 +265,10 @@ def item(state, item_id):
     if item_id not in state["items"]:
         raise ValueError(f"no item {item_id!r} in this round")
     return state["items"][item_id]
+
+
+def files_of(state, item_id):
+    return state["overall"]["files"] if item_id == "overall" else item(state, item_id)["files"]
 
 
 def messages(state, item_id):
