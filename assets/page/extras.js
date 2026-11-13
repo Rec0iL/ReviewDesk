@@ -127,6 +127,12 @@ async function removeFile(id, name) {
   }
 }
 
+/** An attachment's own name, without the item the desk put in front of it. */
+function withoutItem(name, id) {
+  const prefix = `${id.replace(/\./g, "-").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "")}-`;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 function filesRow(id, files) {
   const row = el("div", "files");
   for (const f of files) {
@@ -135,7 +141,8 @@ function filesRow(id, files) {
     open.innerHTML = IMAGE.test(f.name)
       ? `<img src="${fileUrl(f.name)}" alt="" loading="lazy">`
       : `<span class="glyph">${icon(FILE_ICON[f.kind] || "file")}</span>`;
-    chip.append(open, el("span", "label", esc(f.label || t("kind." + f.kind))),
+    const words = f.label || (f.kind === "file" ? withoutItem(f.name, id) : t("kind." + f.kind));
+    chip.append(open, el("span", "label", esc(words)),
       button("quiet tiny remove", icon("remove"), () => removeFile(id, f.name), t("remove.file")));
     row.append(chip);
   }

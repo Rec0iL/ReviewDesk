@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import attach, markdown
 from . import project as proj
 from .runs import Runs
-from .store import LOCK, Events, Rounds
+from .store import LOCK, Events, Questions, Rounds, ideas
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent.parent / "assets"
@@ -37,6 +37,7 @@ STATIC = {
     "/desk.js": ("page/desk.js", "text/javascript; charset=utf-8"),
     "/i18n.js": ("page/i18n.js", "text/javascript; charset=utf-8"),
     "/extras.js": ("page/extras.js", "text/javascript; charset=utf-8"),
+    "/board.js": ("page/board.js", "text/javascript; charset=utf-8"),
     "/fonts/plex-sans.ttf": ("fonts/IBMPlexSans-Variable.ttf", "font/ttf"),
     "/fonts/plex-mono.ttf": ("fonts/IBMPlexMono-Regular.ttf", "font/ttf"),
 }
@@ -54,6 +55,7 @@ class Desk:
         self.folder = proj.ensure(self.root)
         self.rounds = Rounds(self.folder)
         self.events = Events(self.folder)
+        self.questions = Questions(self.folder)
         self.token = proj.token(self.root)
         self.clients = []
         self.clients_lock = threading.Lock()
@@ -63,7 +65,8 @@ class Desk:
         self.last_wait = 0.0
         self.url = ""
         self.last_seen = time.time()
-        self.notifier = None if quiet else shutil.which("notify-send")
+        # REVIEW_DESK_NO_NOTIFY=1 keeps the desktop quiet (the tests set it).
+        self.notifier = None if quiet or os.environ.get("REVIEW_DESK_NO_NOTIFY") else shutil.which("notify-send")
         self.runs = Runs(self.root, self.rounds, self.broadcast)
         self.say = (lambda _: None) if quiet else (lambda text: print(text, flush=True))
 
@@ -82,11 +85,11 @@ class Desk:
         """Is Claude waiting for a hand-back (a `wait` running, or one a moment ago)?"""
         return self.waits > 0 or time.time() - self.last_wait < LISTENING
 
-    def claude_did(self, slug, what, item=None, title="", body=""):
+    def claude_did(self, slug, what, item=None, title="", body="", kind="round"):
         """Tells the pages what Claude just did, with a notification they show (chime, toast, or
         a desktop notification while hidden). With no page able to show it, the desktop shows it."""
         note = {"title": title, "body": body}
-        self.broadcast(type="round", slug=slug, by="claude", what=what, item=item, notify=note)
+        self.broadcast(type=kind, slug=slug, by="claude", what=what, item=item, notify=note)
         pages = [p for p in self.pages.values() if time.time() - p.get("at", 0) < 120]
         if self.notifier and not any(p.get("visible") or p.get("notify") for p in pages):
             threading.Thread(target=self.desktop_notification, args=(title, body), daemon=True).start()
@@ -259,6 +262,10 @@ def handler_for(desk, server_ref):
                     return self.send_json(200, {"doc": doc, "state": present(desk.rounds.state(slug, doc))})
                 if path == "/api/events":
                     return self.stream(query.get("c", [""])[0][:16])
+                if path == "/api/ideas":
+                    return self.send_json(200, {"ideas": ideas(desk.rounds)})
+                if path == "/api/questions":
+                    return self.send_json(200, {"questions": desk.questions.pending()})
                 if path == "/api/runs":
                     return self.send_json(200, {"runs": desk.runs.of(query.get("round", [""])[0])})
                 if path == "/api/log":
@@ -447,6 +454,11 @@ def handler_for(desk, server_ref):
                 desk.broadcast(type="round", slug=slug, by="you", client=data.get("client"))
                 desk.broadcast(type="rounds")
                 return {"sent": sent, "listening": desk.listening()}
+            if path == "/api/answer":
+                answered = desk.questions.answer(data["id"], data["answers"])
+                desk.events.add("answer", question=answered["id"], title=answered["title"], answers=answered["answers"])
+                desk.broadcast(type="questions", client=data.get("client"))
+                return {"question": answered}
             if path == "/api/presence":
                 if data.get("item") is not None:
                     desk.presence = {"round": slug, "item": data.get("item"), "at": time.strftime("%H:%M:%S")}
@@ -454,6 +466,11 @@ def handler_for(desk, server_ref):
                     desk.pages[str(data["client"])[:16]] = {"visible": bool(data.get("visible", True)),
                                                            "notify": bool(data.get("notify")), "at": time.time()}
                 return {"ok": True}
+            if path == "/api/claude" and data.get("action") == "ask":
+                asked = desk.questions.add(data)
+                first = asked["questions"][0]["question"]
+                desk.claude_did(None, "ask", title=asked["title"] or "Claude has a question", body=first, kind="questions")
+                return {"question": asked, "pages": desk.connected()}
             if path == "/api/claude":
                 result, notice = claude_action(rounds, data)
                 if notice:

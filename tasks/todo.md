@@ -12,7 +12,7 @@ Plan: `~/.claude/plans/review-desk.md` (approved 2026-11-13). One commit per pha
 - [x] 3. Attachments and actions: screenshots with the markup editor, screen recordings, log lines,
       any file; Run buttons with live output and Stop; links to files and the commit, Claude's
       pictures in items
-- [ ] 4. Ideas board, question cards (`ask`), summary to copy
+- [x] 4. Ideas board, question cards (`ask`), summary to copy
 - [ ] 5. Phone: a second listener on the home network with its own secret, the QR code, the
       firewall check; no Run there
 - [ ] 6. The skill: `SKILL.md`, references, the self-test, the install script (link and hook),
@@ -45,3 +45,11 @@ Uploads are named after their item, served as plain text in a sandbox when they 
 ranges for recordings. Code blocks got a header row (language, Run, Copy); the accent has a darker
 text shade in the light theme. Not testable here: taking a screenshot and recording the screen
 need someone to pick a window in the browser's share dialog: part of the user's check.
+
+**Phase 4** (2026-11-13): 38 tests on both Pythons. Checked live: the Ideas board lists every idea
+with its status and Claude's reply, filters by status and jumps to the item; `review-desk ask`
+put two questions on the page (pill, sidebar entry, toast); answering them woke a background
+`wait`, which printed the choices and the note; the summary to copy lists what needs a change, what
+partly works, what works, questions and ideas (in the pane, without clipboard access, it opens in
+the viewer instead). Tests no longer show desktop notifications (`REVIEW_DESK_NO_NOTIFY`); one
+test before that fix may have shown one on the user's desktop.

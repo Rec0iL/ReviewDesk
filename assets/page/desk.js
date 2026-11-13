@@ -22,6 +22,7 @@ const ICONS = {
   "bell-off": '<path d="M6 16.5V11a6 6 0 0 1 9.4-4.9M18 11v5.5l1.5 1.5H8"/><path d="M10 20.5h4"/><path d="M4 4l16 16"/>',
   sound: '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
   "sound-off": '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
   attach: '<path d="M15.5 7.5l-6.8 6.8a2 2 0 0 0 2.8 2.8l7-7a4 4 0 0 0-5.6-5.6l-7 7a6 6 0 0 0 8.5 8.5l6-6"/>',
   camera: '<path d="M4 8.5h3l1.8-2.5h6.4L17 8.5h3v10H4z"/><circle cx="12" cy="13" r="3.4"/>',
   image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19.5 17"/>',
@@ -55,6 +56,10 @@ const S = {
   handing: false,
   audio: null,
   runs: new Map(),      // the open round's Run output, by code block
+  view: "round",        // or "ideas": the Ideas board
+  ideas: [],
+  ideaFilter: "all",
+  questions: [],        // Claude's question sets waiting for answers
 };
 
 // -- words and small helpers ---------------------------------------------------------------------
@@ -137,7 +142,7 @@ async function api(path, body) {
 }
 
 async function loadState() {
-  S.state = await api("/api/state");
+  [S.state] = await Promise.all([api("/api/state"), loadIdeas()]);
   applyProject();
   if (S.round) {
     syncSide();
@@ -180,13 +185,15 @@ async function openRound(slug, { keepPlace = false } = {}) {
   }
   const moved = slug !== S.current;
   const round = overlay(await api(`/api/round/${encodeURIComponent(slug)}`), slug);
+  const fromBoard = S.view !== "round";
   S.current = slug;
   S.round = round;
+  S.view = "round";
   if (moved) await loadRuns();
-  remember({ round: slug });
-  renderMain({ keepPlace: keepPlace && !moved });
+  remember({ round: slug, view: "round" });
+  renderMain({ keepPlace: keepPlace && !moved && !fromBoard });
   syncSide();
-  if (moved) {
+  if (moved || fromBoard) {
     const last = recall();
     const target = last.round === slug && last.item ? card(last.item) : null;
     if (target) target.scrollIntoView({ block: "center" });
@@ -242,6 +249,17 @@ async function onEvent(event) {
     refreshHead();
     return;
   }
+  if (event.type === "questions") {
+    await loadQuestions();
+    if (event.notify) announce(event);
+    return;
+  }
+  if (S.view === "ideas" && (event.type === "round" || event.type === "rounds")) {
+    if (event.type === "round" && event.by === "claude" && event.notify) announce(event);
+    await loadState();
+    if (!document.querySelector("dialog[open]")) renderIdeas();
+    return;
+  }
   if (event.type === "handled" || event.type === "rounds" || event.type === "settings") {
     await loadState();
     if (!S.current && S.state.rounds.length) await openRound(S.state.rounds[0].slug);
@@ -284,14 +302,17 @@ function chime() {
 function announce(event) {
   const round = (S.state && S.state.rounds.find((r) => r.slug === event.slug)) || {};
   const title = t(`notify.${event.what}`) || event.notify.title;
-  const body = event.what === "new" ? event.notify.body : [round.title || event.slug, event.what === "reply" ? event.notify.body : ""].filter(Boolean).join(" · ");
+  const body = event.what === "new" || event.what === "ask"
+    ? event.notify.body
+    : [round.title || event.slug, event.what === "reply" ? event.notify.body : ""].filter(Boolean).join(" · ");
   chime();
   if (document.hidden && S.prefs.notify && "Notification" in window && Notification.permission === "granted") {
     const n = new Notification(title, { body, tag: `${event.slug}:${event.what}`, icon: faviconData() });
     n.onclick = () => {
       window.focus();
       n.close();
-      goTo(event.slug, event.item);
+      if (event.what === "ask") openAsk();
+      else goTo(event.slug, event.item);
     };
   } else toast(body ? `${title}: ${body}` : title);
 }
@@ -302,7 +323,7 @@ function faviconData() {
 }
 
 async function goTo(slug, item) {
-  if (slug !== S.current) {
+  if (slug !== S.current || S.view !== "round") {
     if (item) remember({ round: slug, item });
     await openRound(slug);
   }
@@ -518,7 +539,20 @@ function ring(counts) {
   return `<svg class="ring" viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="${r}" stroke="var(--control)"/>${parts}</svg>`;
 }
 
+function renderViews() {
+  const nav = $("#views");
+  nav.replaceChildren();
+  const ideas = button("view", `${icon("idea")}<span>${esc(t("ideas"))}</span>`
+    + (S.ideas.length ? `<span class="n">${S.ideas.length}</span>` : ""), () => showIdeas());
+  if (S.view === "ideas") ideas.setAttribute("aria-current", "true");
+  nav.append(ideas);
+  if (S.questions.length) {
+    nav.append(button("view asks", `${icon("question")}<span>${esc(t("asks.title"))}</span><span class="badge">${S.questions.length}</span>`, openAsk));
+  }
+}
+
 function renderSide() {
+  renderViews();
   const list = $("#rounds");
   list.innerHTML = "";
   const rounds = (S.state && S.state.rounds) || [];
@@ -529,7 +563,7 @@ function renderSide() {
   for (const r of rounds) {
     const li = el("li");
     const b = button(null, "", () => openRound(r.slug).catch((e) => toast(e.message)));
-    if (r.slug === S.current) b.setAttribute("aria-current", "true");
+    if (r.slug === S.current && S.view === "round") b.setAttribute("aria-current", "true");
     const c = r.counts || { total: 0 };
     const done = (c.total || 0) - (c.open || 0);
     const bits = r.error ? [esc(r.error)] : [esc(t("of", { a: done, b: c.total || 0 }))];
@@ -599,7 +633,9 @@ function renderHead(head) {
       </div>
     </div>
     <div class="bar" aria-hidden="true">${bar}</div>
-    <div class="status"><div class="tally">${tally}</div><span class="saved"></span></div>`;
+    <div class="status"><div class="tally">${tally}</div><span class="saved"></span>
+      <button type="button" class="link copy-summary">${icon("copy")}<span>${esc(t("summary.copy"))}</span></button></div>`;
+  $(".copy-summary", head).onclick = copySummary;
   const hand = $(".hand", head);
   $("span", hand).textContent = S.handing ? t("handing") : state.sent ? t("hand.again") : t("hand.back");
   hand.disabled = S.handing;
@@ -963,7 +999,9 @@ $("#lang").onchange = (e) => {
   } catch {}
   renderWords();
   renderSide();
-  renderMain({ keepPlace: true });
+  renderAsks();
+  if (S.view === "ideas") renderIdeas();
+  else renderMain({ keepPlace: true });
 };
 
 $("main").addEventListener("scroll", () => {
@@ -979,6 +1017,8 @@ $("main").addEventListener("scroll", () => {
     const last = recall();
     const slugs = S.state.rounds.map((r) => r.slug);
     await openRound(slugs.includes(last.round) ? last.round : slugs[0]);
+    if (last.view === "ideas") await showIdeas();
+    await loadQuestions();
   } catch {
     toast(t("offline"));
     renderMain();

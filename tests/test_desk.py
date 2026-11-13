@@ -14,6 +14,9 @@ import time
 import unittest
 from pathlib import Path
 
+# Desks the tests start never show desktop notifications.
+os.environ["REVIEW_DESK_NO_NOTIFY"] = "1"
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -237,6 +240,42 @@ class StoreTest(Temp):
         with self.assertRaises(ValueError):
             self.rounds.delete_message("sample", "open", "c1")
         self.assertEqual(len(self.rounds.state("sample")["items"]["open"]["messages"]), 2)
+
+    def test_questions(self):
+        qs = store.Questions(self.root / ".review")
+        asked = qs.add({"title": "Loops", "questions": [
+            {"question": "Which modes?", "header": "Modes", "multiSelect": True,
+             "options": [{"label": "Loop"}, "Once", {"label": "Ping-pong", "description": "back and forth"}]},
+            {"question": "Default?", "options": ["Loop", "Once"]}]})
+        self.assertEqual(asked["id"], "q1")
+        self.assertEqual(asked["questions"][0]["options"][1], {"label": "Once", "description": ""})
+        for bad in ({}, {"questions": []}, {"questions": [{"question": "x", "options": ["only one"]}]},
+                    {"questions": [{"question": "x", "options": ["a", "a"]}]},
+                    {"questions": [{"question": " ", "options": ["a", "b"]}]}):
+            with self.assertRaises(ValueError):
+                qs.add(bad)
+        with self.assertRaises(ValueError):  # one choice where only one fits
+            qs.answer("q1", [{"chosen": ["Loop"]}, {"chosen": ["Loop", "Once"]}])
+        with self.assertRaises(ValueError):
+            qs.answer("q1", [{"chosen": ["Loop"]}])
+        done = qs.answer("q1", [{"chosen": ["Loop", "Ping-pong", "Nonsense"], "note": "both"}, {"other": "ask me"}])
+        self.assertEqual(done["answers"][0]["chosen"], ["Loop", "Ping-pong"])
+        self.assertEqual(done["answers"][1]["other"], "ask me")
+        self.assertEqual(qs.pending(), [])
+        with self.assertRaises(ValueError):
+            qs.answer("q1", [{}, {}])
+
+    def test_ideas_board(self):
+        self.rounds.message("sample", "open", "idea", "Cache it.", message_id="mi1")
+        self.rounds.message("sample", "overall", "idea", "A dark theme.", message_id="mi2")
+        self.rounds.message("sample", "open", "idea", "", message_id="mi3")
+        self.rounds.message("sample", "open", "reply", "Good one, planned for M7.", sender="claude", reply_to="mi1")
+        self.rounds.idea_status("sample", "open", "mi1", "planned")
+        board = store.ideas(self.rounds)
+        self.assertEqual([(i["item"], i["text"], i["status"]) for i in board],
+                         [("open", "Cache it.", "planned"), ("overall", "A dark theme.", "new")])
+        self.assertEqual(board[0]["replies"][0]["text"], "Good one, planned for M7.")
+        self.assertEqual((board[0]["number"], board[0]["round_title"]), ("1.1", "Sample check"))
 
     def test_events(self):
         events = store.Events(self.root / ".review")
@@ -535,6 +574,30 @@ class ServerTest(Temp):
         self.assertEqual(self.request("GET", "/api/source?path=blob.bin")[0], 400)
         self.assertEqual(self.request("GET", "/api/commit?ref=HEAD;rm")[0], 400)
 
+    def test_ask_and_answer(self):
+        events = self.listen()
+        status, out = self.request("POST", "/api/claude", {"action": "ask", "title": "Loops", "questions": [
+            {"question": "Default?", "options": ["Loop", "Once"]}]})
+        self.assertEqual((status, out["question"]["id"], out["pages"]), (200, "q1", 1))
+        self.assertEqual(self.request("POST", "/api/claude", {"action": "ask", "questions": []})[0], 400)
+        seen = []
+        deadline = time.time() + 3
+        while time.time() < deadline and not any(e.get("type") == "questions" for e in seen):
+            try:
+                seen.append(events.get(timeout=0.5))
+            except Exception:
+                pass
+        ask = next(e for e in seen if e.get("type") == "questions")
+        self.assertEqual((ask["what"], ask["notify"]["body"]), ("ask", "Default?"))
+        self.assertEqual([q["id"] for q in self.request("GET", "/api/questions")[1]["questions"]], ["q1"])
+        status, _ = self.request("POST", "/api/answer", {"id": "q1", "answers": [{"chosen": ["Once"], "note": "for now"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.request("GET", "/api/questions")[1]["questions"], [])
+        got = self.request("GET", "/api/wait?timeout=1")[1]["events"]
+        self.assertEqual([(e["type"], e["question"], e["answers"][0]["chosen"]) for e in got], [("answer", "q1", ["Once"])])
+        ideas = self.request("GET", "/api/ideas")[1]["ideas"]
+        self.assertEqual(ideas, [])
+
     def test_watcher_sees_claude(self):
         stop = threading.Event()
         seen = []
@@ -629,6 +692,24 @@ class CommandTest(Temp):
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("no item 'nope'", bad.stderr)
         self.assertIsNone(project.runtime(self.root))
+
+    def test_ask_then_answers_through_wait(self):
+        write_round(self.root, "sample")
+        questions = json.dumps({"title": "Speed", "questions": [
+            {"question": "Highest speed?", "header": "Speed", "options": [{"label": "2x"}, {"label": "4x"}]}]})
+        try:
+            out = subprocess.run([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "--project", str(self.root), "ask", "-"],
+                                 input=questions, capture_output=True, text=True, timeout=30)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("asked q1 (1 question(s))", out.stdout)
+            self.assertIn("No page is open", out.stdout)
+            from desk.cli import call
+            call(project.runtime(self.root), "POST", "/api/answer", {"id": "q1", "answers": [{"chosen": ["4x"], "other": "", "note": "if it stays smooth"}]})
+            out = self.run_desk("wait", "--timeout", "5")
+            self.assertIn("Answered at", out.stdout)
+            self.assertIn("- Highest speed?\n  → 4x\n  note: if it stays smooth", out.stdout)
+        finally:
+            self.run_desk("stop")
 
     def test_hook_speaks_only_when_answers_wait(self):
         write_round(self.root, "sample")

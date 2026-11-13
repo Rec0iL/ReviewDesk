@@ -355,6 +355,114 @@ def answers_md(slug, doc, state):
     return "\n".join(out)
 
 
+# -- Claude's questions ------------------------------------------------------------------------
+
+class Questions:
+    """Claude's planning questions, shaped like its question cards in the chat: each set has a
+    title and up to six questions, each with two to six options (and room for your own)."""
+
+    def __init__(self, folder):
+        self.path = Path(folder) / "questions.json"
+
+    def all(self):
+        return read_json(self.path, []) or []
+
+    def pending(self):
+        return [q for q in self.all() if not q.get("answered")]
+
+    def get(self, qid):
+        found = next((q for q in self.all() if q["id"] == qid), None)
+        if not found:
+            raise ValueError(f"no question {qid!r}")
+        return found
+
+    def add(self, data):
+        """A new set of questions (checked first). Returns it with its id."""
+        asked = checked_questions(data)
+        with LOCK:
+            sets = self.all()
+            asked["id"] = next_id(sets, "q")
+            asked["asked"] = now()
+            asked["answered"] = None
+            sets.append(asked)
+            write_json(self.path, sets)
+        return asked
+
+    def answer(self, qid, answers):
+        """Your answers to a set: for each question the options you chose, your own words, a
+        note. Returns the set with its answers."""
+        with LOCK:
+            sets = self.all()
+            found = next((q for q in sets if q["id"] == qid), None)
+            if not found:
+                raise ValueError(f"no question {qid!r}")
+            if found.get("answered"):
+                raise ValueError("already answered")
+            if not isinstance(answers, list) or len(answers) != len(found["questions"]):
+                raise ValueError("one answer for each question")
+            out = []
+            for q, a in zip(found["questions"], answers):
+                labels = [o["label"] for o in q["options"]]
+                chosen = [c for c in (a.get("chosen") or []) if c in labels]
+                if not q.get("multiSelect") and len(chosen) > 1:
+                    raise ValueError(f"one choice for {q['question']!r}")
+                out.append({"question": q["question"], "chosen": chosen,
+                            "other": text(a.get("other") or "")[:5000], "note": text(a.get("note") or "")[:5000]})
+            found["answers"] = out
+            found["answered"] = now()
+            write_json(self.path, sets)
+            return found
+
+
+def checked_questions(data):
+    """A set of questions as Claude sends it, checked and trimmed to what the page shows."""
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+        raise ValueError("questions: a list of questions")
+    qs = data["questions"]
+    if not 1 <= len(qs) <= 6:
+        raise ValueError("one to six questions")
+    out = []
+    for q in qs:
+        if not isinstance(q, dict) or not str(q.get("question", "")).strip():
+            raise ValueError("each question needs its question")
+        options = q.get("options") or []
+        if not isinstance(options, list) or not 2 <= len(options) <= 6:
+            raise ValueError(f"{q['question']!r}: two to six options")
+        opts = []
+        for o in options:
+            o = {"label": o} if isinstance(o, str) else o
+            if not isinstance(o, dict) or not str(o.get("label", "")).strip():
+                raise ValueError(f"{q['question']!r}: each option needs a label")
+            opts.append({"label": str(o["label"])[:200], "description": str(o.get("description", ""))[:1000]})
+        if len({o["label"] for o in opts}) != len(opts):
+            raise ValueError(f"{q['question']!r}: two options share a label")
+        out.append({"question": str(q["question"])[:1000], "header": str(q.get("header", ""))[:40],
+                    "multiSelect": bool(q.get("multiSelect")), "options": opts})
+    return {"title": str(data.get("title", ""))[:200], "questions": out}
+
+
+def ideas(rounds):
+    """Every idea of every round, newest round first, with where it is and Claude's replies."""
+    out = []
+    for slug in rounds.slugs():
+        try:
+            doc = rounds.doc(slug)
+            state = rounds.state(slug, doc)
+        except (OSError, ValueError):
+            continue
+        places = [(it["id"], it["number"], it["md"]) for it in markdown.all_items(doc)] + [("overall", "", "")]
+        for item_id, number, md in places:
+            thread = messages(state, item_id)
+            for m in thread:
+                if m["kind"] != "idea" or not m["text"].strip():
+                    continue
+                replies = [r for r in thread if r.get("to") == m["id"] and r["from"] == "claude"]
+                out.append({"round": slug, "round_title": doc["title"], "item": item_id, "number": number,
+                            "item_text": md, "id": m["id"], "text": m["text"], "status": m.get("status", "new"),
+                            "at": m["at"], "replies": [{"text": r["text"], "at": r["at"]} for r in replies]})
+    return out
+
+
 # -- events ------------------------------------------------------------------------------------
 
 class Events:

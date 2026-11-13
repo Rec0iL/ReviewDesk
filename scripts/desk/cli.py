@@ -14,6 +14,10 @@ folder (the git repository, or the folder itself), or the one `--project` names.
                            items back for another look, with what changed
     idea ROUND ITEM MESSAGE STATUS
                            an idea planned, done, declined (or new)
+    ask [FILE|-] [--wait]  question cards on the page (JSON like the chat's question tool:
+                           {"title", "questions": [{"question", "header", "multiSelect",
+                           "options": [{"label", "description"}]}]}); the answers come
+                           through `wait` (or right away with --wait)
     config [--title T] [--accent #rrggbb]
     serve                  the server itself (what start runs in the background)
 """
@@ -161,8 +165,14 @@ def show_events(root, events):
                 print(f"(couldn't read them: {err})")
             print()
         elif e["type"] == "answer":
-            print(f"Answered at {e['at']}: {e.get('question', '?')}")
-            print(json.dumps(e.get("answers", {}), ensure_ascii=False, indent=2))
+            print(f"Answered at {e['at']}: {e.get('title') or e.get('question', '?')} ({e.get('question')})")
+            for a in e.get("answers", []):
+                picked = ", ".join(a.get("chosen") or []) or "(none of the options)"
+                print(f"- {a['question']}\n  → {picked}")
+                if a.get("other", "").strip():
+                    print(f"  → in their own words: {a['other'].strip()}")
+                if a.get("note", "").strip():
+                    print(f"  note: {a['note'].strip()}")
             print()
     print("Run `review-desk wait` again in the background to hear the next hand-back.")
 
@@ -209,6 +219,29 @@ def claude(root, body):
     return claude_action(Rounds(proj.ensure(root)), body)[0]
 
 
+def ask(root, source, then_wait=False):
+    """Question cards on the page. The desk starts if needed (a desktop notification brings you
+    there when no page is open)."""
+    raw = sys.stdin.read() if source in (None, "-") else Path(source).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        sys.exit(f"review-desk ask: that isn't JSON ({e})")
+    rt = start(root, open_browser=False, quiet=True)
+    try:
+        out = call(rt, "POST", "/api/claude", {**data, "action": "ask"})
+    except RuntimeError as e:
+        sys.exit(f"review-desk ask: {e}")
+    q = out["question"]
+    print(f"asked {q['id']} ({len(q['questions'])} question(s))")
+    if not out.get("pages"):
+        print("No page is open, so a desktop notification asks them to look. If they don't, ask in the chat.")
+    if then_wait:
+        wait(root)
+    else:
+        print("The answers come through `review-desk wait`.")
+
+
 def config(root, title=None, accent=None):
     proj.ensure(root)
     if accent and not (accent.startswith("#") and len(accent) in (4, 7)):
@@ -248,6 +281,9 @@ def main(argv=None):
     p.add_argument("item")
     p.add_argument("message")
     p.add_argument("status", choices=("new", "planned", "done", "declined"))
+    p = sub.add_parser("ask", parents=[common])
+    p.add_argument("file", nargs="?", help="the questions as JSON (- or nothing: stdin)")
+    p.add_argument("--wait", action="store_true", help="then wait for the answers")
     p = sub.add_parser("config", parents=[common])
     p.add_argument("--title")
     p.add_argument("--accent")
@@ -286,6 +322,8 @@ def main(argv=None):
                 print(f"idea {args.message}: {args.status}")
         except (RuntimeError, ValueError, KeyError) as e:
             sys.exit(f"review-desk {args.command}: {e}")
+    elif args.command == "ask":
+        ask(root, args.file, args.wait)
     elif args.command == "config":
         config(root, args.title, args.accent)
     elif args.command == "serve":

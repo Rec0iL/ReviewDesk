@@ -1,0 +1,274 @@
+"use strict";
+// Review Desk's board: the Ideas board (every idea of every round, with Claude's word on it),
+// Claude's question cards, and the summary to copy. Loaded before desk.js; uses its helpers when
+// called.
+
+const IDEA_STATES = ["new", "planned", "done", "declined"];
+const DRAFTS = "review-desk:drafts";
+
+/** Markdown as plain words (for the board and the summary). */
+function plain(md) {
+  return String(md || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/(^|[^\w*])\*(\S(?:.*?\S)?)\*(?![\w*])/g, "$1$2")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[,:;]$/, "");
+}
+
+/** Every checklist item of a round, nested ones included, in order. */
+function allItems(doc) {
+  const out = [];
+  const walk = (blocks) => {
+    for (const b of blocks) {
+      if (b.type === "item") {
+        out.push(b);
+        walk(b.children);
+      } else if (b.type === "list") b.items.forEach((entry) => walk(entry.children));
+    }
+  };
+  doc.sections.forEach((s) => walk(s.blocks));
+  return out;
+}
+
+// -- the Ideas board ----------------------------------------------------------------------------
+
+async function loadIdeas() {
+  try {
+    S.ideas = (await api("/api/ideas")).ideas;
+  } catch {
+    S.ideas = S.ideas || [];
+  }
+}
+
+async function showIdeas() {
+  S.view = "ideas";
+  remember({ view: "ideas" });
+  await loadIdeas();
+  renderSide();
+  renderIdeas();
+  $("main").scrollTop = 0;
+}
+
+function renderIdeas() {
+  const main = $("main");
+  const filter = S.ideaFilter || "all";
+  const wrap = el("div", "wrap board");
+  const head = el("div", "head");
+  const counts = { all: S.ideas.length };
+  for (const s of IDEA_STATES) counts[s] = S.ideas.filter((i) => i.status === s).length;
+  head.innerHTML = `<div class="row"><div class="titles"><h1>${esc(t("ideas"))}</h1>
+    <div class="meta"><span>${esc(t("ideas.about"))}</span></div></div></div>`;
+  const chips = el("div", "filters");
+  for (const f of ["all", ...IDEA_STATES]) {
+    const b = button("chip-button", `${esc(t(f === "all" ? "ideas.all" : "idea." + f))}<b>${counts[f]}</b>`, () => {
+      S.ideaFilter = f;
+      renderIdeas();
+    });
+    b.setAttribute("aria-pressed", String(f === filter));
+    chips.append(b);
+  }
+  head.append(chips);
+  wrap.append(head);
+  const shown = S.ideas.filter((i) => filter === "all" || i.status === filter);
+  if (!shown.length) {
+    wrap.append(el("div", "empty-state small", `<div class="mark">${icon("idea")}</div><p>${esc(t(S.ideas.length ? "ideas.none.filter" : "ideas.none"))}</p>`));
+  }
+  for (const i of shown) {
+    const card = el("article", `idea-card ${i.status}`);
+    const top = el("div", "top");
+    top.append(el("span", `chip ${i.status}`, esc(t("idea." + i.status))));
+    const where = i.number ? `${i.number} ${plain(i.item_text)}` : t("overall.title");
+    top.append(button("link where", `${esc(i.round_title)} · ${esc(where)}`, () => goTo(i.round, i.item)));
+    const said = el("div", "said");
+    said.textContent = i.text;
+    card.append(top, said);
+    for (const r of i.replies) {
+      const reply = el("div", "reply", `<span class="avatar">C</span>`);
+      reply.append(Object.assign(el("span"), { textContent: r.text }));
+      card.append(reply);
+    }
+    wrap.append(card);
+  }
+  main.replaceChildren(wrap);
+}
+
+// -- Claude's question cards ----------------------------------------------------------------------
+
+async function loadQuestions() {
+  try {
+    S.questions = (await api("/api/questions")).questions;
+  } catch {
+    S.questions = S.questions || [];
+  }
+  renderAsks();
+}
+
+function renderAsks() {
+  let pill = document.querySelector(".asks-pill");
+  if (!S.questions.length) {
+    pill?.remove();
+    document.querySelector("dialog.ask")?.close();
+  } else {
+    if (!pill) {
+      pill = button("asks-pill primary", "", openAsk);
+      document.body.append(pill);
+    }
+    pill.innerHTML = `${icon("question")}<span>${esc(t("asks.pill", { n: S.questions.length }))}</span>`;
+  }
+  renderSide();
+}
+
+function drafts() {
+  return stored(DRAFTS);
+}
+
+function openAsk() {
+  const set = S.questions[0];
+  if (!set) return;
+  document.querySelector("dialog.ask")?.close();
+  const all = drafts();
+  const draft = all[set.id] || set.questions.map(() => ({ chosen: [], other: "", note: "" }));
+  const keep = () => store(DRAFTS, { ...drafts(), [set.id]: draft });
+
+  const d = dialog("ask");
+  const head = el("header", null, `<h2>${esc(set.title || t("asks.title"))}</h2>`);
+  if (S.questions.length > 1) head.append(el("span", "count", esc(t("of", { a: 1, b: S.questions.length }))));
+  head.append(button("quiet close", icon("remove"), () => d.close(), t("ask.later")));
+  const body = el("div", "ask-body");
+  const progress = el("span", "hint");
+  const send = button("primary", esc(t("ask.send")), submit);
+
+  set.questions.forEach((q, n) => {
+    const a = draft[n];
+    const box = el("fieldset", "q");
+    box.append(el("legend", null, `${q.header ? `<span class="chip">${esc(q.header)}</span>` : ""}<span>${esc(q.question)}</span>`));
+    if (q.multiSelect) box.append(el("div", "how", esc(t("ask.many"))));
+    const kind = q.multiSelect ? "checkbox" : "radio";
+    const name = `${set.id}-${n}`;
+    for (const o of q.options) {
+      const label = el("label", "opt");
+      const input = el("input");
+      Object.assign(input, { type: kind, name, value: o.label, checked: a.chosen.includes(o.label) });
+      input.onchange = () => {
+        a.chosen = [...box.querySelectorAll(`input[name="${CSS.escape(name)}"]:checked`)].map((x) => x.value).filter((v) => v !== "\u0000other");
+        if (!q.multiSelect && input.checked) a.other = "";
+        sync();
+      };
+      const words = el("span", "words", `<b>${esc(o.label)}</b>${o.description ? `<small>${esc(o.description)}</small>` : ""}`);
+      label.append(input, words);
+      box.append(label);
+    }
+    const other = el("label", "opt other");
+    const otherRadio = el("input");
+    Object.assign(otherRadio, { type: kind, name, value: "\u0000other", checked: Boolean(a.other) });
+    const otherText = el("input", "other-text");
+    Object.assign(otherText, { type: "text", value: a.other, placeholder: t("ask.other") });
+    otherText.oninput = () => {
+      a.other = otherText.value;
+      otherRadio.checked = Boolean(a.other.trim());
+      if (!q.multiSelect && a.other.trim()) {
+        a.chosen = [];
+        box.querySelectorAll(`input[name="${CSS.escape(name)}"]`).forEach((x) => x !== otherRadio && (x.checked = false));
+      }
+      sync();
+    };
+    otherRadio.onchange = () => {
+      if (otherRadio.checked) otherText.focus();
+      if (!q.multiSelect) a.chosen = [];
+      sync();
+    };
+    other.append(otherRadio, otherText);
+    box.append(other);
+    const note = el("textarea", "note small");
+    Object.assign(note, { value: a.note, placeholder: t("ask.note") });
+    note.oninput = () => {
+      a.note = note.value;
+      autosize(note);
+      keep();
+    };
+    box.append(note);
+    body.append(box);
+  });
+
+  function answered() {
+    return draft.filter((a) => a.chosen.length || a.other.trim()).length;
+  }
+
+  function sync() {
+    keep();
+    progress.textContent = t("ask.progress", { a: answered(), b: set.questions.length });
+    send.disabled = answered() < set.questions.length;
+  }
+
+  async function submit() {
+    send.disabled = true;
+    try {
+      await api("/api/answer", { id: set.id, answers: draft });
+      const rest = drafts();
+      delete rest[set.id];
+      store(DRAFTS, rest);
+      d.close();
+      toast(S.state && S.state.listening ? t("handed.listening") : t("ask.sent"));
+      await loadQuestions();
+      if (S.questions.length) openAsk();
+    } catch (e) {
+      toast(t("ask.failed", { e: e.message }));
+      send.disabled = false;
+    }
+  }
+
+  const foot = el("footer");
+  foot.append(progress, button("quiet", esc(t("ask.later")), () => d.close()), send);
+  d.append(head, body, foot);
+  d.showModal();
+  sync();
+}
+
+// -- the summary to copy ------------------------------------------------------------------------
+
+function summaryText() {
+  const { doc, state } = S.round;
+  const c = counts();
+  const items = allItems(doc);
+  const out = [`## ${doc.title}${state.round > 1 ? ` · ${t("round", { n: state.round })}` : ""}`, ""];
+  out.push([t("of", { a: c.total - c.open, b: c.total }), ...VERDICTS.filter((v) => c[v]).map((v) => `${c[v]} ${t("count." + v)}`)].join(" · "), "");
+  for (const v of ["change", "partly", "blocked", "skipped"]) {
+    const these = items.filter((it) => state.items[it.id] && state.items[it.id].verdict === v);
+    if (!these.length) continue;
+    out.push(`**${t(v)}**`);
+    for (const it of these) {
+      const a = state.items[it.id];
+      const note = a.note.trim().replace(/\s*\n\s*/g, " ");
+      out.push(`- ${it.number} ${plain(it.md)}${a.severity ? ` (${t(a.severity)})` : ""}${note ? ` · ${note}` : ""}`);
+    }
+    out.push("");
+  }
+  const works = items.filter((it) => state.items[it.id] && state.items[it.id].verdict === "works");
+  if (works.length) out.push(`**${t("works")}:** ${works.map((it) => it.number).join(", ")}`, "");
+  for (const kind of ["question", "idea"]) {
+    const said = [];
+    for (const it of [...items, { id: "overall", number: "" }]) {
+      const thread = it.id === "overall" ? state.overall.messages : (state.items[it.id] || {}).messages || [];
+      for (const m of thread) {
+        if (m.from !== "claude" && m.kind === kind && m.text.trim()) said.push(`- ${it.number ? it.number + " " : ""}${m.text.trim().replace(/\s*\n\s*/g, " ")}`);
+      }
+    }
+    if (said.length) out.push(`**${t(kind === "question" ? "summary.questions" : "summary.ideas")}**`, ...said, "");
+  }
+  if (state.overall.note.trim()) out.push(`**${t("overall.title")}**`, state.overall.note.trim(), "");
+  return out.join("\n").trim() + "\n";
+}
+
+async function copySummary() {
+  const text = summaryText();
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t("summary.copied"));
+  } catch {
+    viewer(t("summary.copy"), text);
+  }
+}
