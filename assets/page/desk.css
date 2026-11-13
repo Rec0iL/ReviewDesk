@@ -121,6 +121,14 @@ main { overflow-y: auto; min-height: 0; }
 .bar span { transition: width 0.25s; }
 .tally { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--dim); margin-top: 7px; }
 .tally b { color: var(--text); font-weight: 600; }
+.tally .jump { background: none; border: 0; padding: 1px 4px; margin: 0 -4px; border-radius: 6px; color: var(--dim); font-size: 12.5px; }
+.tally .jump:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.tally .jump:disabled { cursor: default; opacity: 1; }
+.item.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { 0%, 30% { box-shadow: var(--shadow), 0 0 0 4px color-mix(in srgb, var(--accent) 70%, transparent); } }
+#phone[aria-pressed="true"] { color: var(--works); }
+video.grab { position: fixed; left: -10000px; top: 0; width: 2px; height: 2px; opacity: 0; }
+.lines.pick { user-select: none; }
 .tally i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
 
 /* -- content -------------------------------------------------------------------------------- */
@@ -335,6 +343,11 @@ dialog.editor .label { flex: 1; min-width: 200px; background: var(--bg); border:
 .head .status .copy-summary { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; white-space: nowrap; }
 .head .status .copy-summary svg.icon { width: 13px; height: 13px; }
 
+.update-pill {
+  position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 9; display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 99px; background: var(--panel); border-color: var(--accent); color: var(--accent-text);
+  box-shadow: var(--shadow); animation: arrive 0.3s ease-out;
+}
 .asks-pill {
   position: fixed; right: 22px; bottom: 22px; z-index: 8; display: inline-flex; align-items: center; gap: 8px;
   padding: 10px 16px; border-radius: 99px; box-shadow: var(--shadow), 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent);
@@ -388,7 +401,10 @@ dialog.phone { width: min(440px, calc(100vw - 32px)); }
 
 /* -- narrow screens: the rounds above, as a strip ---------------------------------------- */
 @media (max-width: 760px) {
-  .desk { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  /* The whole page scrolls, so the round strip at the top goes out of the way. */
+  html, body { height: auto; }
+  .desk { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; height: auto; }
+  main { overflow: visible; }
   .side { border-right: 0; border-bottom: 1px solid var(--border); min-width: 0; }
   .side h2, .side .foot { display: none; }
   .views { display: flex; padding: 0 12px 6px; }

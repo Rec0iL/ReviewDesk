@@ -229,11 +229,18 @@ class Rounds:
         """The round handed back to Claude."""
         return self.edit(slug, lambda doc, state: state.update(sent=now()) or state["sent"])
 
-    def retest(self, slug, item_ids, note=""):
+    def retest(self, slug, item_ids, note="", notes=None):
         """Items back for another look: what they had goes into their history, a new round starts
-        for them, Claude's note says what changed."""
+        for them, Claude's note says what changed (`notes` gives an item a note of its own)."""
+        notes = notes or {}
+        if not isinstance(notes, dict) or not all(isinstance(v, str) for v in notes.values()):
+            raise ValueError("notes: an item's name, then its note")
+        if not item_ids:
+            raise ValueError("which items?")
 
         def change(doc, state):
+            for item_id in item_ids:
+                item(state, item_id)  # all of them exist, before anything changes
             state["round"] += 1
             for item_id in item_ids:
                 a = item(state, item_id)
@@ -242,7 +249,7 @@ class Rounds:
                     "note": a["note"], "files": a["files"], "retest": a["retest"], "at": now(),
                 })
                 a.update(verdict="", severity="", note="", files=[])
-                a["retest"] = {"round": state["round"], "note": text(note), "at": now()}
+                a["retest"] = {"round": state["round"], "note": text(notes.get(item_id, note)), "at": now()}
             state["sent"] = None
             return state["round"]
 

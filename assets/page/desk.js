@@ -61,6 +61,8 @@ const S = {
   ideas: [],
   ideaFilter: "all",
   questions: [],        // Claude's question sets waiting for answers
+  jump: null,           // the tally's last jump: {v, i}
+  phoneOn: Boolean(BOOT.phone),
 };
 
 // -- words and small helpers ---------------------------------------------------------------------
@@ -144,6 +146,7 @@ async function api(path, body) {
 
 async function loadState() {
   [S.state] = await Promise.all([api("/api/state"), loadIdeas()]);
+  if (S.state.version && BOOT.version && S.state.version !== BOOT.version) offerReload();
   applyProject();
   if (S.round) {
     syncSide();
@@ -157,6 +160,16 @@ function summary() {
 
 function thread(round, id) {
   return id === "overall" ? round.state.overall.messages : (round.state.items[id] || {}).messages;
+}
+
+/** Review Desk itself was updated while the page was open: a button to load the new page. */
+function offerReload() {
+  if (document.querySelector(".update-pill")) return;
+  const pill = button("update-pill", `${icon("undo")}<span>${esc(t("updated"))}</span>`, async () => {
+    await flushNow();
+    location.reload();
+  });
+  document.body.append(pill);
 }
 
 /** What the desk doesn't have yet, laid over what it sent. */
@@ -198,7 +211,7 @@ async function openRound(slug, { keepPlace = false } = {}) {
     const last = recall();
     const target = last.round === slug && last.item ? card(last.item) : null;
     if (target) target.scrollIntoView({ block: "center" });
-    else $("main").scrollTop = 0;
+    else scroller().scrollTop = 0;
   }
 }
 
@@ -245,7 +258,11 @@ function connect() {
 async function onEvent(event) {
   if (event.client === CLIENT) return; // our own change coming back
   if (event.type === "run") return onRun(event);
-  if (event.type === "phone") return refreshPhone();
+  if (event.type === "phone") {
+    S.phoneOn = Boolean(event.on);
+    renderPrefs();
+    return refreshPhone();
+  }
   if (event.type === "listening") {
     if (S.state) S.state.listening = event.on;
     refreshHead();
@@ -367,8 +384,9 @@ function renderPrefs() {
   const phone = $("#phone");
   phone.hidden = BOOT.local === false;
   phone.innerHTML = icon("phone");
-  phone.title = t("phone.title");
+  phone.title = S.phoneOn ? t("phone.is.on") : t("phone.title");
   phone.setAttribute("aria-label", phone.title);
+  phone.setAttribute("aria-pressed", String(S.phoneOn));
 }
 
 $("#bell").onclick = async () => {
@@ -504,6 +522,12 @@ function here(id) {
   presenceTimer = setTimeout(() => tellPresence(id), 700);
 }
 
+/** What scrolls: the main column on a wide screen, the whole page on a narrow one. */
+function scroller() {
+  const main = $("main");
+  return getComputedStyle(main).overflowY === "auto" ? main : document.scrollingElement;
+}
+
 function card(id) {
   return document.querySelector(`[data-id="${CSS.escape(id)}"]`);
 }
@@ -617,7 +641,7 @@ function renderHead(head) {
   const entry = summary() || {};
   const listening = Boolean(S.state && S.state.listening);
   const meta = [];
-  if (doc.about) meta.push(esc(t("about", { t: doc.about })));
+  if (doc.about) meta.push(esc(t("about", { t: aboutText(doc.about) })));
   if (state.round > 1) meta.push(esc(t("round", { n: state.round })));
   if (doc.meta && doc.meta.commit) {
     meta.push(`<button type="button" class="link mono commit-link" data-ref="${esc(doc.meta.commit)}" title="${esc(t("commit.show"))}">${esc(t("commit", { c: doc.meta.commit }))}</button>`);
@@ -629,7 +653,11 @@ function renderHead(head) {
   const bar = VERDICTS.map((v) => `<span style="width:${pct(c[v])};background:${colour(v)}"></span>`).join("");
   const tally = [...VERDICTS, "open"]
     .filter((v) => c[v] || v === "open")
-    .map((v) => `<span>${v === "open" ? "" : `<i style="background:${colour(v)}"></i>`}<b>${c[v]}</b> ${esc(t("count." + v))}</span>`)
+    .map((v) => {
+      const at = S.jump && S.jump.v === v && c[v] ? `${Math.min(S.jump.i, c[v] - 1) + 1}/` : "";
+      return `<button type="button" class="jump" data-v="${v}" ${c[v] ? "" : "disabled"} title="${esc(t("jump.tip"))}">`
+        + `${v === "open" ? "" : `<i style="background:${colour(v)}"></i>`}<b>${at}${c[v]}</b> ${esc(t("count." + v))}</button>`;
+    })
     .join("");
   head.innerHTML = `
     <div class="row">
@@ -645,11 +673,36 @@ function renderHead(head) {
     <div class="status"><div class="tally">${tally}</div><span class="saved"></span>
       <button type="button" class="link copy-summary">${icon("copy")}<span>${esc(t("summary.copy"))}</span></button></div>`;
   $(".copy-summary", head).onclick = copySummary;
+  head.querySelectorAll(".jump").forEach((b) => (b.onclick = () => jumpTo(b.dataset.v)));
   const hand = $(".hand", head);
   $("span", hand).textContent = S.handing ? t("handing") : state.sent ? t("hand.again") : t("hand.back");
   hand.disabled = S.handing;
   hand.onclick = handBack;
   showSaved(head);
+}
+
+/** "20 minutes" from the checklist, in the page's language. */
+function aboutText(text) {
+  const m = text.trim().match(/^(\d+(?:[.,]\d+)?)(?:\s*[-–]\s*(\d+(?:[.,]\d+)?))?\s*(minutes?|mins?\.?|minuten?|hours?|hrs?\.?|h|stunden?|std\.?)$/i);
+  if (!m) return text;
+  const n = m[2] ? `${m[1]}–${m[2]}` : m[1];
+  const unit = /^(h|stund|std)/i.test(m[3]) ? "hour" : "minute";
+  return t(`unit.${unit}${n === "1" ? "" : "s"}`, { n });
+}
+
+/** The tally's buttons: each click goes to the next item of that kind; another kind starts over. */
+function jumpTo(v) {
+  const ids = allItems(S.round.doc).map((it) => it.id).filter((id) => (S.round.state.items[id]?.verdict || "open") === v);
+  if (!ids.length) return;
+  S.jump = S.jump && S.jump.v === v ? { v, i: (S.jump.i + 1) % ids.length } : { v, i: 0 };
+  const target = card(ids[S.jump.i]);
+  refreshHead();
+  if (!target) return;
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  target.classList.remove("flash");
+  void target.offsetWidth; // restart the animation
+  target.classList.add("flash");
+  here(ids[S.jump.i]);
 }
 
 function refreshHead() {
@@ -934,7 +987,7 @@ function renderMain({ keepPlace = false } = {}) {
     start: focused.selectionStart,
     end: focused.selectionEnd,
   } : null;
-  const scroll = main.scrollTop;
+  const scroll = scroller().scrollTop;
 
   const wrap = el("div", "wrap");
   const head = el("div", "head");
@@ -987,7 +1040,7 @@ function renderMain({ keepPlace = false } = {}) {
       again.setSelectionRange(keep.start, keep.end);
     }
   }
-  if (keepPlace) main.scrollTop = scroll;
+  if (keepPlace) scroller().scrollTop = scroll;
 }
 
 // -- start -----------------------------------------------------------------------------------------
@@ -1013,10 +1066,12 @@ $("#lang").onchange = (e) => {
   else renderMain({ keepPlace: true });
 };
 
-$("main").addEventListener("scroll", () => {
+const onScroll = () => {
   clearTimeout(S.scrollTimer);
-  S.scrollTimer = setTimeout(() => remember({ scroll: $("main").scrollTop }), 300);
-}, { passive: true });
+  S.scrollTimer = setTimeout(() => remember({ scroll: scroller().scrollTop }), 300);
+};
+$("main").addEventListener("scroll", onScroll, { passive: true });
+window.addEventListener("scroll", onScroll, { passive: true });
 
 (async function start() {
   initExtras();

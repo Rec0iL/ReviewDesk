@@ -115,7 +115,7 @@ class Desk:
         timer.daemon = True
         timer.start()
         self.phone["timer"] = timer
-        self.broadcast(type="phone")
+        self.broadcast(type="phone", on=True)
         return self.phone_status()
 
     def phone_off(self):
@@ -133,7 +133,7 @@ class Desk:
             p["server"].server_close()
 
         threading.Thread(target=close, daemon=True).start()
-        self.broadcast(type="phone")
+        self.broadcast(type="phone", on=False)
         return {"on": False}
 
     def phone_status(self):
@@ -223,7 +223,7 @@ class Desk:
             except (OSError, ValueError) as e:
                 rounds.append({"slug": slug, "title": slug, "error": str(e)})
         return {"project": proj.settings(self.root) | {"path": str(self.root)}, "rounds": rounds,
-                "listening": self.listening()}
+                "listening": self.listening(), "version": asset_version()}
 
     def wait(self, timeout):
         """What Claude hasn't had yet (hand-backs, answers), as soon as there is some; marked as
@@ -604,8 +604,9 @@ def claude_action(rounds, data):
         first = (data["text"].strip().splitlines() or [""])[0][:140]
         return {"message": m}, {"what": "reply", "item": data["item"], "title": f"Claude replied · {title}", "body": first}
     if action == "retest":
-        items = list(data["items"])
-        n = rounds.retest(slug, items, data.get("text", ""))
+        notes = data.get("notes") or {}
+        items = list(data.get("items") or notes)
+        n = rounds.retest(slug, items, data.get("text", ""), notes)
         count = f"{len(items)} item{'s' if len(items) != 1 else ''}"
         return {"round": n}, {"what": "retest", "item": items[0] if items else None,
                               "title": f"{count} back for another look", "body": f"{title} · round {n}"}
@@ -636,11 +637,17 @@ def present(state):
     return state
 
 
+def asset_version():
+    """A fingerprint of the page's own files: it changes when Review Desk is updated."""
+    return format(max(p.stat().st_mtime_ns for p in (ASSETS / "page").iterdir()), "x")
+
+
 def page(desk, on_phone=False):
     """The page, with what it needs to start: its token, the project's settings, and whether it
     is this computer's page (only that one runs commands and lets the phone in)."""
     token = desk.phone["token"] if on_phone else desk.token
-    boot = {"token": token, "project": proj.settings(desk.root), "local": not on_phone}
+    boot = {"token": token, "project": proj.settings(desk.root), "local": not on_phone,
+            "phone": bool(desk.phone) and not on_phone, "version": asset_version()}
     script = json.dumps(boot, ensure_ascii=False).replace("</", "<\\/")
     return (ASSETS / "page" / "index.html").read_text(encoding="utf-8").replace("/*BOOT*/null", script)
 

@@ -10,7 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
-FILE_KINDS = ("screenshot", "recording", "log", "file")
+FILE_KINDS = ("screenshot", "photo", "recording", "log", "file")
 MAX_UPLOAD = 300 * 1024 * 1024
 MAX_VIEW = 1024 * 1024
 CHUNK = 1024 * 1024

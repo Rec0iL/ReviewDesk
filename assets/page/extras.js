@@ -6,7 +6,7 @@
 const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
 const VIDEO = /\.(webm|mp4|mov|mkv|ogv)$/i;
 const TEXT = /\.(txt|log|md|json|csv|ya?ml|toml|ini|cfg|conf|rs|py|js|ts|sh|c|h|cpp|hpp|html|css|xml)$/i;
-const FILE_ICON = { screenshot: "image", recording: "record", log: "log", file: "file" };
+const FILE_ICON = { screenshot: "image", photo: "camera", recording: "record", log: "log", file: "file" };
 const RED = "#ff4d5e";
 const COLOURS = [RED, "#ffc94d", "#4dd2ff", "#ffffff"];
 
@@ -103,6 +103,13 @@ async function showFile(f) {
 
 // -- attachments ------------------------------------------------------------------------------------
 
+/** How the page numbers an item ("1.2"), or "Anything else?" for the round's own. */
+function itemNumber(id) {
+  if (id === "overall") return t("overall.title");
+  const it = allItems(S.round.doc).find((x) => x.id === id);
+  return it ? it.number : id;
+}
+
 async function upload(id, kind, blob, name, label = "") {
   const q = new URLSearchParams({ round: S.current, item: id, kind, name, label, client: CLIENT });
   const r = await fetch(`/api/upload?${q}`, {
@@ -162,11 +169,16 @@ function attachMenu(anchor, id) {
   const menu = el("div", "menu");
   menu.setAttribute("role", "menu");
   const entries = [];
-  if (canCapture()) entries.push(["camera", "attach.screenshot", () => takeScreenshot(id)]);
   const touch = matchMedia("(pointer: coarse)").matches;
-  entries.push(["image", touch ? "attach.photo" : "attach.image", () => pickFiles(id, "image/*")]);
+  if (canCapture()) entries.push(["camera", "attach.screenshot", () => takeScreenshot(id)]);
+  if (touch) {
+    // A file picker for several files hides the camera on phones: the photo gets its own entry.
+    entries.push(["camera", "attach.camera", () => pickFiles(id, "image/*", { camera: true })]);
+    entries.push(["image", "attach.pictures", () => pickFiles(id, "image/*")]);
+  } else entries.push(["image", "attach.image", () => pickFiles(id, "image/*")]);
   if (canCapture() && window.MediaRecorder) entries.push(["record", "attach.record", () => recordScreen(id)]);
-  if ((S.round.doc.meta || {}).log) entries.push(["log", "attach.log", () => logPicker(id)]);
+  const ranCode = [...S.runs.values()].some((r) => r.lines.length);
+  if ((S.round.doc.meta || {}).log || ranCode) entries.push(["log", "attach.log", () => logPicker(id)]);
   entries.push(["file", "attach.file", () => pickFiles(id)]);
   for (const [ic, key, fn] of entries) {
     const item = button("menu-item", `${icon(ic)}<span>${esc(t(key))}</span>`, (e) => {
@@ -183,10 +195,11 @@ function attachMenu(anchor, id) {
   setTimeout(() => document.addEventListener("click", closeMenus, { once: true }));
 }
 
-function pickFiles(id, accept) {
+function pickFiles(id, accept, { camera = false } = {}) {
   const input = el("input");
   input.type = "file";
-  input.multiple = true;
+  input.multiple = !camera;
+  if (camera) input.setAttribute("capture", "environment");
   if (accept) input.accept = accept;
   input.onchange = () => takeFiles(id, [...input.files]);
   input.click();
@@ -198,6 +211,7 @@ async function takeFiles(id, files) {
     else {
       try {
         await upload(id, "file", f, f.name);
+        toast(t("attached", { n: itemNumber(id) }));
       } catch (e) {
         toast(t("upload.failed", { e: e.message }));
       }
@@ -209,31 +223,56 @@ async function takeFiles(id, files) {
 
 async function takeScreenshot(id) {
   let stream;
+  let frame;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false, selfBrowserSurface: "exclude" });
-    const video = el("video");
-    video.muted = true;
-    video.srcObject = stream;
-    await video.play();
-    await new Promise((r) => setTimeout(r, 300)); // a fresh frame
-    const c = el("canvas");
-    c.width = video.videoWidth;
-    c.height = video.videoHeight;
-    c.getContext("2d").drawImage(video, 0, 0);
-    const png = await new Promise((r) => c.toBlob(r, "image/png"));
-    await markup(id, png);
+    frame = await grabFrame(stream);
   } catch (e) {
     if (e.name !== "NotAllowedError") toast(t("upload.failed", { e: e.message }));
+    return;
   } finally {
+    // Sharing ends as soon as the picture is taken, before the editor opens.
     if (stream) stream.getTracks().forEach((track) => track.stop());
+  }
+  await markup(id, frame);
+}
+
+/** One frame of a screen stream, as a picture. A still window may send no new frames, so every
+ * wait has a limit and falls back to the next way. */
+async function grabFrame(stream) {
+  const limit = (promise, ms) => Promise.race([promise, new Promise((_, no) => setTimeout(() => no(new Error(t("shot.timeout"))), ms))]);
+  const track = stream.getVideoTracks()[0];
+  if (window.ImageCapture) {
+    try {
+      await new Promise((r) => setTimeout(r, 200)); // the share dialog fades out first
+      return await limit(new ImageCapture(track).grabFrame(), 1500);
+    } catch {}
+  }
+  // Otherwise from a video, which has to be on the page (Chrome stops one that isn't).
+  const video = el("video", "grab");
+  Object.assign(video, { muted: true, playsInline: true, srcObject: stream });
+  document.body.append(video);
+  try {
+    await limit(video.play(), 4000);
+    if (video.readyState < 2) await limit(new Promise((r) => video.addEventListener("loadeddata", r, { once: true })), 4000);
+    if (video.requestVideoFrameCallback) await limit(new Promise((r) => video.requestVideoFrameCallback(() => r())), 600).catch(() => {});
+    return await createImageBitmap(video);
+  } finally {
+    video.remove();
   }
 }
 
 function markup(id, blob) {
   return new Promise(async (done) => {
     let img;
+    const photo = blob.type === "image/jpeg" || blob.type === "image/heic";
     try {
       img = await createImageBitmap(blob);
+      // Phone photos and 4K screens are scaled to 2560 at most: plenty to see, quicker to send.
+      const scale = Math.min(1, 2560 / Math.max(img.width, img.height));
+      if (scale < 1) {
+        img = await createImageBitmap(img, { resizeWidth: Math.round(img.width * scale), resizeHeight: Math.round(img.height * scale), resizeQuality: "high" });
+      }
     } catch (e) {
       toast(t("upload.failed", { e: e.message }));
       return done();
@@ -362,16 +401,17 @@ function markup(id, blob) {
     const save = button("primary", esc(t("save.attach")), () => {
       save.disabled = true;
       save.textContent = t("uploading");
-      canvas.toBlob(async (png) => {
+      canvas.toBlob(async (picture) => {
         try {
-          await upload(id, "screenshot", png, "screenshot.png", label.value.trim());
+          await upload(id, photo ? "photo" : "screenshot", picture, photo ? "photo.jpg" : "screenshot.png", label.value.trim());
           d.close();
+          toast(t("attached", { n: itemNumber(id) }));
         } catch (e) {
           error.textContent = t("upload.failed", { e: e.message });
           save.disabled = false;
           save.textContent = t("save.attach");
         }
-      }, "image/png");
+      }, photo ? "image/jpeg" : "image/png", 0.9);
     });
     const head = el("header", null, `<h2>${esc(t("editor.title"))}</h2>`);
     head.append(tools);
@@ -437,19 +477,32 @@ async function recordScreen(id) {
 // -- picking lines: from a log the checklist names, or from a Run's output ------------------------
 
 async function logPicker(id) {
-  try {
-    const { logs } = await api(`/api/log?round=${encodeURIComponent(S.current)}`);
-    linePicker(id, logs);
-  } catch (e) {
-    toast(t("viewer.failed", { e: e.message }));
+  // The outputs of this round's Runs first (the item's own before the others), then its logs.
+  const mine = new Set([...((card(id) || document).querySelectorAll(".code[data-code]"))].map((c) => c.dataset.code));
+  const runs = [...S.runs.entries()]
+    .filter(([, r]) => r.lines.length)
+    .sort(([a], [b]) => Number(mine.has(b)) - Number(mine.has(a)))
+    .map(([code, r]) => ({ name: t("run.label", { c: code }), lines: [...r.lines] }));
+  let logs = [];
+  if ((S.round.doc.meta || {}).log) {
+    try {
+      logs = (await api(`/api/log?round=${encodeURIComponent(S.current)}`)).logs;
+    } catch (e) {
+      toast(t("viewer.failed", { e: e.message }));
+    }
   }
+  if (runs.length || logs.length) linePicker(id, [...runs, ...logs]);
 }
 
 function linePicker(id, sources) {
   const d = dialog("picker");
   let current = 0;
   let anchor = null;
+  let drag = null; // while the button is held: where it started, adding or taking away, the lines before
   const picked = new Set();
+  const stopDrag = () => (drag = null);
+  d.addEventListener("pointerup", stopDrag);
+  d.addEventListener("pointercancel", stopDrag);
   const head = el("header", null, `<h2>${esc(t("log.title"))}</h2>`);
   head.append(button("quiet close", icon("remove"), () => d.close(), t("close")));
   const tabs = el("div", "tabs");
@@ -476,19 +529,43 @@ function linePicker(id, sources) {
       const row = el("div", "line");
       row.dataset.n = i + 1;
       row.textContent = s || " ";
+      // Click picks a line, Shift+click a range, and dragging over lines picks them all.
       row.onclick = (e) => {
-        if (e.shiftKey && anchor !== null) {
-          const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)];
-          for (let k = a; k <= b; k++) picked.add(k);
-        } else if (picked.has(i)) picked.delete(i);
+        if (e.pointerType === "mouse" || e.shiftKey) return; // handled on pointerdown
+        if (picked.has(i)) picked.delete(i);
         else picked.add(i);
         anchor = i;
         mark();
       };
+      row.onpointerdown = (e) => {
+        if (e.button !== 0 || e.pointerType !== "mouse") return; // a finger scrolls; a tap toggles
+        e.preventDefault();
+        if (e.shiftKey && anchor !== null) {
+          const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)];
+          for (let k = a; k <= b; k++) picked.add(k);
+          mark();
+          return;
+        }
+        drag = { from: i, add: !picked.has(i), before: new Set(picked) };
+        anchor = i;
+        sweep(i);
+      };
+      row.onpointerenter = () => drag && sweep(i);
       box.append(row);
     });
     mark();
     box.scrollTop = box.scrollHeight;
+  }
+
+  function sweep(to) {
+    picked.clear();
+    drag.before.forEach((k) => picked.add(k));
+    const [a, b] = [Math.min(drag.from, to), Math.max(drag.from, to)];
+    for (let k = a; k <= b; k++) {
+      if (drag.add) picked.add(k);
+      else picked.delete(k);
+    }
+    mark();
   }
 
   function mark() {
@@ -506,6 +583,7 @@ function linePicker(id, sources) {
     try {
       await upload(id, "log", blob, `${src.name.split("/").pop() || "log"}.txt`, label);
       d.close();
+      toast(t("attached", { n: itemNumber(id) }));
     } catch (e) {
       toast(t("upload.failed", { e: e.message }));
       attachButton.disabled = false;
@@ -685,30 +763,38 @@ function initExtras() {
     e.preventDefault();
     markup(holder.dataset.id, files[0]);
   });
-  // Drop files on an item to attach them there.
+  // Drop files on an item to attach them there. Anywhere else the drop is caught too, so the
+  // browser never opens the file instead of the page.
+  const hasFiles = (e) => Boolean(e.dataTransfer) && [...e.dataTransfer.types].includes("Files");
+  const holderAt = (e) => (e.target.closest ? e.target.closest("main [data-id]") : null);
   let over = null;
-  main.addEventListener("dragover", (e) => {
-    const holder = e.target.closest("[data-id]");
-    if (!holder || !e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    if (over !== holder) {
-      over?.classList.remove("dropping");
-      over = holder;
-      holder.classList.add("dropping");
-    }
-  });
-  main.addEventListener("dragleave", (e) => {
-    if (over && !over.contains(e.relatedTarget)) {
-      over.classList.remove("dropping");
-      over = null;
-    }
-  });
-  main.addEventListener("drop", (e) => {
-    const holder = e.target.closest("[data-id]");
+  const unmark = () => {
     over?.classList.remove("dropping");
     over = null;
-    if (!holder || !e.dataTransfer.files.length) return;
+  };
+  document.addEventListener("dragenter", (e) => hasFiles(e) && e.preventDefault());
+  document.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
     e.preventDefault();
+    const holder = S.round && !document.querySelector("dialog[open]") ? holderAt(e) : null;
+    e.dataTransfer.dropEffect = holder ? "copy" : "none";
+    if (holder !== over) {
+      unmark();
+      if (holder) {
+        over = holder;
+        holder.classList.add("dropping");
+      }
+    }
+  });
+  document.addEventListener("dragleave", (e) => {
+    if (over && !e.relatedTarget) unmark(); // left the window
+  });
+  document.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const holder = over || holderAt(e);
+    unmark();
+    if (!holder || !S.round) return toast(t("drop.where"));
     takeFiles(holder.dataset.id, [...e.dataTransfer.files]);
   });
   document.addEventListener("keydown", (e) => {

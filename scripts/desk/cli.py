@@ -12,6 +12,8 @@ folder (the git repository, or the folder itself), or the one `--project` names.
                            Claude's reply in an item's thread (ITEM `overall` for the round's own)
     retest ROUND ITEM... [--note TEXT]
                            items back for another look, with what changed
+    retest ROUND --each FILE|-
+                           the same, each item with its own note (JSON: {"item": "note"})
     idea ROUND ITEM MESSAGE STATUS
                            an idea planned, done, declined (or new)
     ask [FILE|-] [--wait]  question cards on the page (JSON like the chat's question tool:
@@ -326,8 +328,9 @@ def main(argv=None):
     p.add_argument("--to", help="the message it answers")
     p = sub.add_parser("retest", parents=[common])
     p.add_argument("round")
-    p.add_argument("items", nargs="+")
+    p.add_argument("items", nargs="*")
     p.add_argument("--note", default="", help="what changed (- reads it from stdin)")
+    p.add_argument("--each", help="a JSON file (- for stdin) with a note for each item: {\"item\": \"note\"}")
     p = sub.add_parser("idea", parents=[common])
     p.add_argument("round")
     p.add_argument("item")
@@ -368,9 +371,14 @@ def main(argv=None):
                 out = claude(root, {"action": "reply", "round": args.round, "item": args.item, "text": text, "to": args.to})
                 print(f"replied ({out['message']['id']})")
             elif args.command == "retest":
+                notes = {}
+                if args.each:
+                    raw = sys.stdin.read() if args.each == "-" else Path(args.each).read_text(encoding="utf-8")
+                    notes = json.loads(raw)
                 note = sys.stdin.read() if args.note == "-" else args.note
-                out = claude(root, {"action": "retest", "round": args.round, "items": args.items, "text": note})
-                print(f"{len(args.items)} item(s) back for another look, round {out['round']}")
+                items = list(dict.fromkeys([*args.items, *notes]))
+                out = claude(root, {"action": "retest", "round": args.round, "items": items, "text": note, "notes": notes})
+                print(f"{len(items)} item(s) back for another look, round {out['round']}")
             else:
                 claude(root, {"action": "idea", "round": args.round, "item": args.item, "id": args.message,
                               "status": args.status})

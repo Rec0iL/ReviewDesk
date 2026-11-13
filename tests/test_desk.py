@@ -293,6 +293,16 @@ class StoreTest(Temp):
         self.assertEqual(board[0]["replies"][0]["text"], "Good one, planned for M7.")
         self.assertEqual((board[0]["number"], board[0]["round_title"]), ("1.1", "Sample check"))
 
+    def test_retest_with_a_note_each(self):
+        self.assertEqual(self.rounds.retest("sample", ["open", "2.1"], "Both fixed.", {"open": "The jump is gone."}), 2)
+        items = self.rounds.state("sample")["items"]
+        self.assertEqual((items["open"]["retest"]["note"], items["2.1"]["retest"]["note"]), ("The jump is gone.", "Both fixed."))
+        with self.assertRaises(ValueError):  # nothing changes when one item is wrong
+            self.rounds.retest("sample", ["open", "nope"], "x")
+        self.assertEqual(self.rounds.state("sample")["round"], 2)
+        with self.assertRaises(ValueError):
+            self.rounds.retest("sample", [], "x")
+
     def test_events(self):
         events = store.Events(self.root / ".review")
         events.add("round", round="sample")
@@ -403,6 +413,7 @@ class ServerTest(ServerBase):
         status, state = self.request("GET", "/api/state")
         self.assertEqual(status, 200)
         self.assertEqual(state["project"]["title"], self.root.name)
+        self.assertRegex(state["version"], r"^[0-9a-f]+$")
         self.assertEqual([r["slug"] for r in state["rounds"]], ["sample"])
         status, _ = self.request("POST", "/api/item", {"round": "sample", "item": "open", "verdict": "works", "note": "ok"})
         self.assertEqual(status, 200)
@@ -811,6 +822,11 @@ class CommandTest(Temp):
         answers = self.run_desk("answers", "sample").stdout
         self.assertIn("  - Re-test (round 2): Both fixed.", answers)
         self.assertIn("Claude, reply c1: On it.", answers)
+        each = subprocess.run([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "--project", str(self.root),
+                               "retest", "sample", "--each", "-"], input=json.dumps({"open": "Faster.", "2.1": "Kept."}),
+                              capture_output=True, text=True, timeout=30)
+        self.assertIn("2 item(s) back for another look, round 3", each.stdout)
+        self.assertIn("  - Re-test (round 3): Kept.", self.run_desk("answers", "sample").stdout)
         bad = self.run_desk("reply", "sample", "nope", "x")
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("no item 'nope'", bad.stderr)

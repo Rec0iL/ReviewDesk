@@ -71,3 +71,20 @@ round; `references/` has the format, the commands and the question cards. `revie
 passes on both Pythons. `tools/install.py` links the skill and the command and, only with
 `--hook`, adds the session-start hook (tried in a throwaway home: added once, other settings kept,
 backed up, removed cleanly).
+
+**The user's check, round 1** (2026-11-13, handed back 14:16): 11 work, 3 partly, 2 need a change.
+Fixed:
+- the screenshot (the frame now comes from ImageCapture, or a video on the page, each with a time
+  limit; the share ends before the editor opens);
+- "Lines from a log or a Run" offers the round's Run outputs first, and lines can be dragged over;
+- dropping files is caught anywhere on the page, with a confirmation;
+- on phones "Take a photo" opens the camera (a picker for several files hid it; checked on a Pixel
+  over adb: Google Camera opened), and photos stay JPEG at 2560 px at most;
+- the phone icon is green while the phone may get in;
+- "20 minutes" follows the page's language;
+- the tally is clickable and cycles through each kind;
+- on narrow screens the whole page scrolls;
+- `retest --each` gives every item its own note;
+- the page offers a reload when Review Desk itself was updated.
+A live camera preview on the phone needs https (browsers only give the camera stream to secure
+pages); declined for now.

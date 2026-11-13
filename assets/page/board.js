@@ -50,7 +50,7 @@ async function showIdeas() {
   await loadIdeas();
   renderSide();
   renderIdeas();
-  $("main").scrollTop = 0;
+  scroller().scrollTop = 0;
 }
 
 function renderIdeas() {
