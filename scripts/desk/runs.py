@@ -45,10 +45,11 @@ class Runs:
                    "started": time.strftime("%H:%M:%S"), "lines": collections.deque(maxlen=KEEP),
                    "pending": [], "proc": proc}
             self.runs[run["id"]] = run
+            started = self.public(run)  # what started, before it can finish
+        self.broadcast(type="run", id=run["id"], round=slug, code=code_id, status="running", started=run["started"])
         threading.Thread(target=self.read, args=(run,), daemon=True).start()
         threading.Thread(target=self.pump, args=(run,), daemon=True).start()
-        self.broadcast(type="run", id=run["id"], round=slug, code=code_id, status="running", started=run["started"])
-        return self.public(run)
+        return started
 
     def read(self, run):
         for line in run["proc"].stdout:

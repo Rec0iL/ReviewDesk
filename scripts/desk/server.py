@@ -21,11 +21,12 @@ import subprocess
 import threading
 import time
 import webbrowser
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import attach, markdown
+from . import attach, markdown, phone, qr
 from . import project as proj
 from .runs import Runs
 from .store import LOCK, Events, Questions, Rounds, ideas
@@ -64,6 +65,9 @@ class Desk:
         self.waits = 0             # `wait` requests running now
         self.last_wait = 0.0
         self.url = ""
+        self.port = 0
+        self.phone = None          # the phone's listener while it is on
+        self.phone_clients = []
         self.last_seen = time.time()
         # REVIEW_DESK_NO_NOTIFY=1 keeps the desktop quiet (the tests set it).
         self.notifier = None if quiet or os.environ.get("REVIEW_DESK_NO_NOTIFY") else shutil.which("notify-send")
@@ -80,6 +84,66 @@ class Desk:
     def connected(self):
         with self.clients_lock:
             return len(self.clients)
+
+    # -- the phone ------------------------------------------------------------------------------
+
+    def phone_on(self):
+        """Opens the desk to a phone on the home network: a second listener with a new secret."""
+        if self.phone:
+            return self.phone_status()
+        ip = phone.lan_address()
+        if not ip or not phone.home_network(ip):
+            raise ValueError("this computer doesn't seem to be on a home network, so a phone can't reach it")
+        ref = []
+        handler = handler_for(self, ref, on_phone=True)
+        for port in (self.port, 0):
+            try:
+                server = ThreadingHTTPServer((ip, port), handler)
+                break
+            except OSError:
+                continue
+        else:
+            raise ValueError(f"no free port on {ip}")
+        server.daemon_threads = True
+        ref.append(server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        token = secrets.token_urlsafe(18)
+        until = time.time() + phone.HOURS * 3600
+        self.phone = {"server": server, "ip": ip, "port": server.server_port, "token": token, "until": until,
+                      "url": f"http://{ip}:{server.server_port}/?p={token}"}
+        timer = threading.Timer(phone.HOURS * 3600, self.phone_off)
+        timer.daemon = True
+        timer.start()
+        self.phone["timer"] = timer
+        self.broadcast(type="phone")
+        return self.phone_status()
+
+    def phone_off(self):
+        """Closes the phone's way in, and the line of any phone page still open."""
+        p, self.phone = self.phone, None
+        if not p:
+            return {"on": False}
+        p["timer"].cancel()
+        with self.clients_lock:
+            for q in self.phone_clients:
+                q.put(None)
+
+        def close():
+            p["server"].shutdown()
+            p["server"].server_close()
+
+        threading.Thread(target=close, daemon=True).start()
+        self.broadcast(type="phone")
+        return {"on": False}
+
+    def phone_status(self):
+        p = self.phone
+        if not p:
+            return {"on": False}
+        if "firewall" not in p:
+            p["firewall"] = phone.firewall(p["port"], p["ip"])  # a few seconds: asked once per opening
+        return {"on": True, "url": p["url"], "ip": p["ip"], "port": p["port"], "qr": qr.svg(p["url"]),
+                "until": time.strftime("%H:%M", time.localtime(p["until"])), "firewall": p["firewall"]}
 
     def listening(self):
         """Is Claude waiting for a hand-back (a `wait` running, or one a moment ago)?"""
@@ -185,7 +249,10 @@ class Desk:
         return waiting
 
 
-def handler_for(desk, server_ref):
+def handler_for(desk, server_ref, on_phone=False):
+    """The request handler for the desk's own listener (127.0.0.1), or, `on_phone`, for the
+    phone's (the home-network address, its own secret, no commands)."""
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -215,15 +282,29 @@ def handler_for(desk, server_ref):
 
         def ours(self):
             port = server_ref[0].server_port
-            return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}")
+            host = self.headers.get("Host", "")
+            if on_phone:
+                return bool(desk.phone) and host == f"{desk.phone['ip']}:{port}"
+            return host in (f"127.0.0.1:{port}", f"localhost:{port}")
 
         def local(self):
             """A request from this computer (the phone's page may not run commands)."""
-            return self.client_address[0] in ("127.0.0.1", "::1") and self.server is server_ref[0]
+            return not on_phone and self.client_address[0] in ("127.0.0.1", "::1")
+
+        def secret(self):
+            if on_phone:
+                return desk.phone["token"] if desk.phone else None
+            return desk.token
 
         def token_ok(self, query):
-            return secrets.compare_digest(
-                self.headers.get("X-Desk-Token") or query.get("t", [""])[0], desk.token)
+            wanted = self.secret()
+            if not wanted:
+                return False
+            given = self.headers.get("X-Desk-Token") or query.get("t", [""])[0]
+            if not given and on_phone:
+                cookie = SimpleCookie(self.headers.get("Cookie", ""))
+                given = cookie["desk"].value if "desk" in cookie else ""
+            return secrets.compare_digest(given, wanted)
 
         def body(self):
             length = int(self.headers.get("Content-Length") or 0)
@@ -243,13 +324,21 @@ def handler_for(desk, server_ref):
             url = urlparse(self.path)
             path, query = url.path, parse_qs(url.query)
             if path == "/":
-                return self.reply(200, page(desk), "text/html; charset=utf-8")
+                if not on_phone:
+                    return self.reply(200, page(desk), "text/html; charset=utf-8")
+                # The phone gets in with the secret from the QR code, kept as a cookie for its
+                # pictures and files.
+                if query.get("p", [""])[0] and secrets.compare_digest(query["p"][0], self.secret() or "") \
+                        or self.token_ok({}):
+                    cookie = f"desk={self.secret()}; HttpOnly; SameSite=Strict; Path=/; Max-Age={phone.HOURS * 3600}"
+                    return self.reply(200, page(desk, on_phone=True), "text/html; charset=utf-8", [("Set-Cookie", cookie)])
+                return self.reply(403, "Scan the QR code on the desk again.", "text/plain; charset=utf-8")
             if path in STATIC:
                 name, kind = STATIC[path]
                 return self.reply(200, (ASSETS / name).read_bytes(), kind)
-            if path == "/api/ping":
+            if path == "/api/ping" and not on_phone:
                 return self.send_json(200, {"project": str(desk.root), "pid": os.getpid(), "pages": desk.connected()})
-            if path.startswith("/files/"):
+            if path.startswith("/files/") and (not on_phone or self.token_ok(query)):
                 return self.file(unquote(path.removeprefix("/files/")))
             if not self.token_ok(query):
                 return self.fail(403, "not allowed")
@@ -262,6 +351,10 @@ def handler_for(desk, server_ref):
                     return self.send_json(200, {"doc": doc, "state": present(desk.rounds.state(slug, doc))})
                 if path == "/api/events":
                     return self.stream(query.get("c", [""])[0][:16])
+                if path == "/api/phone":
+                    if on_phone:
+                        return self.fail(403, "not from the phone")
+                    return self.send_json(200, desk.phone_status())
                 if path == "/api/ideas":
                     return self.send_json(200, {"ideas": ideas(desk.rounds)})
                 if path == "/api/questions":
@@ -352,6 +445,8 @@ def handler_for(desk, server_ref):
             q = queue.Queue()
             with desk.clients_lock:
                 desk.clients.append(q)
+                if on_phone:
+                    desk.phone_clients.append(q)
             if client:
                 desk.pages.setdefault(client, {"visible": True, "notify": False, "at": time.time()})
             self.send_response(200)
@@ -365,6 +460,8 @@ def handler_for(desk, server_ref):
                 while True:
                     try:
                         event = q.get(timeout=15)
+                        if event is None:
+                            break
                         self.wfile.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8"))
                     except queue.Empty:
                         self.wfile.write(b": still here\n\n")
@@ -375,6 +472,8 @@ def handler_for(desk, server_ref):
             finally:
                 with desk.clients_lock:
                     desk.clients.remove(q)
+                    if q in desk.phone_clients:
+                        desk.phone_clients.remove(q)
                 desk.pages.pop(client, None)
                 self.close_connection = True
 
@@ -478,7 +577,13 @@ def handler_for(desk, server_ref):
                 else:
                     desk.broadcast(type="round", slug=slug, by="claude", what=data.get("action"), item=data.get("item"))
                 return result
+            if path == "/api/phone":
+                if not self.local():
+                    raise ValueError("the phone is turned on and off on this computer")
+                return desk.phone_on() if data.get("on") else desk.phone_off()
             if path == "/api/quit":
+                if not self.local():
+                    raise ValueError("only this computer stops the desk")
                 threading.Thread(target=server_ref[0].shutdown, daemon=True).start()
                 return {"ok": True}
             return None
@@ -531,9 +636,11 @@ def present(state):
     return state
 
 
-def page(desk):
-    """The page, with what it needs to start: its token and the project's settings."""
-    boot = {"token": desk.token, "project": proj.settings(desk.root)}
+def page(desk, on_phone=False):
+    """The page, with what it needs to start: its token, the project's settings, and whether it
+    is this computer's page (only that one runs commands and lets the phone in)."""
+    token = desk.phone["token"] if on_phone else desk.token
+    boot = {"token": token, "project": proj.settings(desk.root), "local": not on_phone}
     script = json.dumps(boot, ensure_ascii=False).replace("</", "<\\/")
     return (ASSETS / "page" / "index.html").read_text(encoding="utf-8").replace("/*BOOT*/null", script)
 
@@ -557,6 +664,7 @@ def make_server(root, port=None, quiet=False):
     server.daemon_threads = True
     ref.append(server)
     server.desk = desk
+    desk.port = server.server_port
     return server
 
 
@@ -584,6 +692,7 @@ def serve(root, port=None):
     finally:
         stop.set()
         desk.runs.stop_all()
+        desk.phone_off()
         server.server_close()
         if (proj.read_json(runtime, {}) or {}).get("pid") == os.getpid():
             runtime.unlink(missing_ok=True)

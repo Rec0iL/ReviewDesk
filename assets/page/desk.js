@@ -23,6 +23,7 @@ const ICONS = {
   sound: '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
   "sound-off": '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
   copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+  phone: '<rect x="7" y="3" width="10" height="18" rx="2.2"/><path d="M11 17.5h2"/>',
   attach: '<path d="M15.5 7.5l-6.8 6.8a2 2 0 0 0 2.8 2.8l7-7a4 4 0 0 0-5.6-5.6l-7 7a6 6 0 0 0 8.5 8.5l6-6"/>',
   camera: '<path d="M4 8.5h3l1.8-2.5h6.4L17 8.5h3v10H4z"/><circle cx="12" cy="13" r="3.4"/>',
   image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19.5 17"/>',
@@ -244,6 +245,7 @@ function connect() {
 async function onEvent(event) {
   if (event.client === CLIENT) return; // our own change coming back
   if (event.type === "run") return onRun(event);
+  if (event.type === "phone") return refreshPhone();
   if (event.type === "listening") {
     if (S.state) S.state.listening = event.on;
     refreshHead();
@@ -362,6 +364,11 @@ function renderPrefs() {
   sound.title = S.prefs.sound ? t("sound.on") : t("sound.off");
   sound.setAttribute("aria-label", sound.title);
   sound.setAttribute("aria-pressed", String(S.prefs.sound));
+  const phone = $("#phone");
+  phone.hidden = BOOT.local === false;
+  phone.innerHTML = icon("phone");
+  phone.title = t("phone.title");
+  phone.setAttribute("aria-label", phone.title);
 }
 
 $("#bell").onclick = async () => {
@@ -374,6 +381,8 @@ $("#bell").onclick = async () => {
   renderPrefs();
   tellPresence();
 };
+
+$("#phone").onclick = () => openPhone();
 
 $("#sound").onclick = () => {
   S.prefs.sound = !S.prefs.sound;

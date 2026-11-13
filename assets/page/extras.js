@@ -163,7 +163,8 @@ function attachMenu(anchor, id) {
   menu.setAttribute("role", "menu");
   const entries = [];
   if (canCapture()) entries.push(["camera", "attach.screenshot", () => takeScreenshot(id)]);
-  entries.push(["image", "attach.image", () => pickFiles(id, "image/*")]);
+  const touch = matchMedia("(pointer: coarse)").matches;
+  entries.push(["image", touch ? "attach.photo" : "attach.image", () => pickFiles(id, "image/*")]);
   if (canCapture() && window.MediaRecorder) entries.push(["record", "attach.record", () => recordScreen(id)]);
   if ((S.round.doc.meta || {}).log) entries.push(["log", "attach.log", () => logPicker(id)]);
   entries.push(["file", "attach.file", () => pickFiles(id)]);
@@ -176,7 +177,7 @@ function attachMenu(anchor, id) {
     item.setAttribute("role", "menuitem");
     menu.append(item);
   }
-  menu.append(el("div", "hint", esc(t("attach.paste.hint"))));
+  if (!touch) menu.append(el("div", "hint", esc(t("attach.paste.hint"))));
   anchor.parentElement.append(menu);
   menu.querySelector("button").focus();
   setTimeout(() => document.addEventListener("click", closeMenus, { once: true }));
@@ -602,6 +603,64 @@ function drawRun(code, fresh) {
 
 function runButton(b) {
   return button("quiet tiny run", `${icon("play")}<span>${esc(t("run"))}</span>`, () => startRun(b.id));
+}
+
+// -- the phone ----------------------------------------------------------------------------------
+
+async function openPhone() {
+  document.querySelector("dialog.phone")?.close();
+  const d = dialog("phone");
+  const head = el("header", null, `<h2>${esc(t("phone.title"))}</h2>`);
+  head.append(button("quiet close", icon("remove"), () => d.close(), t("close")));
+  const body = el("div", "phone-body");
+  d.append(head, body);
+  d.showModal();
+  await drawPhone(body);
+}
+
+async function refreshPhone() {
+  const body = document.querySelector("dialog.phone[open] .phone-body");
+  if (body) await drawPhone(body);
+}
+
+async function drawPhone(body, status) {
+  try {
+    status = status || (await api("/api/phone"));
+  } catch (e) {
+    body.replaceChildren(el("p", "error", esc(t("phone.failed", { e: e.message }))));
+    return;
+  }
+  const toggle = async (on) => {
+    try {
+      await drawPhone(body, await api("/api/phone", { on }));
+    } catch (e) {
+      toast(t("phone.failed", { e: e.message }));
+    }
+  };
+  body.replaceChildren();
+  if (!status.on) {
+    body.append(el("p", null, esc(t("phone.about"))), el("p", "dim", esc(t("phone.safe"))));
+    const on = button("primary", `${icon("phone")}<span>${esc(t("phone.on"))}</span>`, () => {
+      on.disabled = true;
+      on.querySelector("span").textContent = t("phone.opening");
+      toggle(true);
+    });
+    body.append(on);
+    return;
+  }
+  const code = el("div", "qr", status.qr);
+  const link = el("div", "link mono");
+  link.textContent = status.url;
+  body.append(el("p", null, esc(t("phone.scan"))), code, link, el("p", "dim", esc(t("phone.until", { t: status.until }))));
+  const fw = status.firewall || {};
+  if (fw.checked && !fw.open) {
+    const warn = el("div", "warn", `<p>${esc(t("phone.firewall"))}</p>`);
+    const cmd = el("pre", "mono");
+    cmd.textContent = fw.fix;
+    warn.append(cmd);
+    body.append(warn);
+  }
+  body.append(button("", esc(t("phone.off")), () => toggle(false)));
 }
 
 // -- once, at the start ---------------------------------------------------------------------------

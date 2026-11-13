@@ -290,7 +290,9 @@ class StoreTest(Temp):
 
 # -- the server ----------------------------------------------------------------------------------
 
-class ServerTest(Temp):
+class ServerBase(Temp):
+    """A desk on a free port, with a sample round, for the tests below."""
+
     def setUp(self):
         super().setUp()
         write_round(self.root, "sample")
@@ -325,6 +327,41 @@ class ServerTest(Temp):
         except ValueError:
             return r.status, payload
 
+    def listen(self):
+        """The page's event stream, read in the background."""
+        import queue as q
+        got = q.Queue()
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"/api/events?t={self.desk.token}&c=page1", headers={"Host": f"127.0.0.1:{self.port}"})
+        r = conn.getresponse()
+
+        def read():
+            try:
+                for line in r.fp:
+                    if line.startswith(b"data: "):
+                        got.put(json.loads(line[6:]))
+            except (OSError, ValueError):
+                pass
+
+        threading.Thread(target=read, daemon=True).start()
+        deadline = time.time() + 3
+        while self.desk.connected() == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        self.addCleanup(conn.close)
+        return got
+
+    def upload(self, item, kind, data, name, label=""):
+        from urllib.parse import urlencode
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        q = urlencode({"round": "sample", "item": item, "kind": kind, "name": name, "label": label})
+        conn.request("POST", f"/api/upload?{q}", data, {"Host": f"127.0.0.1:{self.port}", "X-Desk-Token": self.desk.token})
+        r = conn.getresponse()
+        out = (r.status, json.loads(r.read()))
+        conn.close()
+        return out
+
+
+class ServerTest(ServerBase):
     def test_page_carries_its_token(self):
         status, page = self.request("GET", "/", token=False)
         self.assertEqual(status, 200)
@@ -377,29 +414,6 @@ class ServerTest(Temp):
         event = json.loads(line.removeprefix(b"data: "))
         self.assertEqual((event["type"], event["by"], event["item"], event["client"]), ("round", "you", "open", "abc"))
         conn.close()
-
-    def listen(self):
-        """The page's event stream, read in the background."""
-        import queue as q
-        got = q.Queue()
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        conn.request("GET", f"/api/events?t={self.desk.token}&c=page1", headers={"Host": f"127.0.0.1:{self.port}"})
-        r = conn.getresponse()
-
-        def read():
-            try:
-                for line in r.fp:
-                    if line.startswith(b"data: "):
-                        got.put(json.loads(line[6:]))
-            except (OSError, ValueError):
-                pass
-
-        threading.Thread(target=read, daemon=True).start()
-        deadline = time.time() + 3
-        while self.desk.connected() == 0 and time.time() < deadline:
-            time.sleep(0.05)
-        self.addCleanup(conn.close)
-        return got
 
     def test_hand_back_wakes_wait(self):
         result = {}
@@ -476,16 +490,6 @@ class ServerTest(Temp):
         sent = log.read_text()
         self.assertIn("Claude replied|Hidden page|", sent)
         self.assertIn("Something new to check|No page|", sent)
-
-    def upload(self, item, kind, data, name, label=""):
-        from urllib.parse import urlencode
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        q = urlencode({"round": "sample", "item": item, "kind": kind, "name": name, "label": label})
-        conn.request("POST", f"/api/upload?{q}", data, {"Host": f"127.0.0.1:{self.port}", "X-Desk-Token": self.desk.token})
-        r = conn.getresponse()
-        out = (r.status, json.loads(r.read()))
-        conn.close()
-        return out
 
     def test_attachments(self):
         status, out = self.upload("1.2", "screenshot", b"PNGDATA", "shot.png", "the bar")
@@ -617,6 +621,109 @@ class ServerTest(Temp):
         self.assertIn({"type": "round", "slug": "second", "by": "claude", "what": "new", "item": None,
                        "notify": {"title": "Something new to check", "body": "Second"}}, seen)
         self.assertEqual([e["type"] for e in store.Events(self.root / ".review").all()], ["round"])
+
+
+# -- the phone -----------------------------------------------------------------------------------
+
+class QrTest(unittest.TestCase):
+    def test_reads_back(self):
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            self.skipTest("OpenCV reads the codes back; it isn't here")
+        from desk import qr
+        for length in (5, 40, 75, 100, 130, 170, 210):
+            text = ("http://192.168.1.20:41234/?p=" + "Zq8_-Kx3" * 40)[:length]
+            rows = qr.encode(text)
+            n = len(rows)
+            img = np.full(((n + 8) * 6, (n + 8) * 6), 255, np.uint8)
+            for y, row in enumerate(rows):
+                for x, dark in enumerate(row):
+                    if dark:
+                        img[(y + 4) * 6:(y + 5) * 6, (x + 4) * 6:(x + 5) * 6] = 0
+            self.assertEqual(cv2.QRCodeDetector().detectAndDecode(img)[0], text, f"{length} characters")
+        self.assertTrue(qr.svg("hi").startswith("<svg"))
+        with self.assertRaises(ValueError):
+            qr.encode("x" * 300)
+
+    def test_home_network(self):
+        from desk import phone
+        self.assertTrue(phone.home_network("192.168.1.20"))
+        self.assertTrue(phone.home_network("10.1.2.3"))
+        self.assertFalse(phone.home_network("127.0.0.1"))
+        self.assertFalse(phone.home_network("8.8.8.8"))
+        self.assertFalse(phone.home_network("169.254.1.1"))
+        self.assertFalse(phone.home_network("nonsense"))
+
+
+class PhoneTest(ServerBase):
+    def setUp(self):
+        from desk import phone
+        ip = phone.lan_address()
+        if not ip or not phone.home_network(ip):
+            self.skipTest("no home network here")
+        super().setUp()
+
+    def at_phone(self, method, path, body=None, host=None, cookie=None, token=None):
+        p = self.desk.phone
+        conn = http.client.HTTPConnection(p["ip"], p["port"], timeout=5)
+        headers = {"Host": host or f"{p['ip']}:{p['port']}"}
+        if cookie:
+            headers["Cookie"] = cookie
+        if token:
+            headers["X-Desk-Token"] = token
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, data, headers)
+        r = conn.getresponse()
+        out = (r.status, r.read(), r.getheader("Set-Cookie"))
+        conn.close()
+        return out
+
+    def test_phone_way_in(self):
+        status, on = self.request("POST", "/api/phone", {"on": True})
+        self.addCleanup(self.desk.phone_off)
+        self.assertEqual(status, 200)
+        self.assertTrue(on["on"])
+        self.assertTrue(on["qr"].startswith("<svg"))
+        secret = self.desk.phone["token"]
+        self.assertNotEqual(secret, self.desk.token)
+        self.assertEqual(on["url"], f"http://{on['ip']}:{on['port']}/?p={secret}")
+        # Without the code, or under another name, nothing.
+        self.assertEqual(self.at_phone("GET", "/")[0], 403)
+        self.assertEqual(self.at_phone("GET", "/?p=wrong")[0], 403)
+        self.assertEqual(self.at_phone("GET", f"/?p={secret}", host="evil.example")[0], 403)
+        self.assertEqual(self.at_phone("GET", "/api/state", token=self.desk.token)[0], 403)
+        self.assertEqual(self.at_phone("GET", "/api/ping")[0], 403)
+        # With it: the page (not this computer's), a cookie for pictures and files.
+        status, page, cookie = self.at_phone("GET", f"/?p={secret}")
+        self.assertEqual(status, 200)
+        self.assertIn(b'"local": false', page)
+        self.assertIn(secret.encode(), page)
+        self.assertNotIn(self.desk.token.encode(), page)
+        jar = cookie.split(";")[0]
+        self.assertIn("HttpOnly", cookie)
+        self.assertEqual(self.at_phone("GET", "/api/state", cookie=jar)[0], 200)
+        self.assertEqual(self.at_phone("GET", "/files/sample/files/before.png", cookie=jar)[0], 200)
+        self.assertEqual(self.at_phone("GET", "/files/sample/files/before.png")[0], 403)
+        status, _, _ = self.at_phone("POST", "/api/item", {"round": "sample", "item": "open", "verdict": "works"}, token=secret)
+        self.assertEqual(status, 200)
+        # Never commands, never the switch.
+        self.assertEqual(self.at_phone("POST", "/api/run", {"round": "sample", "code": "c1"}, token=secret)[0], 400)
+        self.assertEqual(self.at_phone("POST", "/api/phone", {"on": False}, token=secret)[0], 400)
+        self.assertEqual(self.at_phone("POST", "/api/quit", {}, token=secret)[0], 400)
+        self.assertEqual(self.at_phone("GET", "/api/phone", token=secret)[0], 403)
+        # Off: the door is shut.
+        status, off = self.request("POST", "/api/phone", {"on": False})
+        self.assertEqual((status, off), (200, {"on": False}))
+        time.sleep(0.8)
+        with self.assertRaises(OSError):
+            conn = http.client.HTTPConnection(on["ip"], on["port"], timeout=2)
+            conn.request("GET", "/", headers={"Host": f"{on['ip']}:{on['port']}"})
+            conn.getresponse()
 
 
 # -- the command ---------------------------------------------------------------------------------

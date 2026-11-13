@@ -13,7 +13,7 @@ Plan: `~/.claude/plans/review-desk.md` (approved 2026-11-13). One commit per pha
       any file; Run buttons with live output and Stop; links to files and the commit, Claude's
       pictures in items
 - [x] 4. Ideas board, question cards (`ask`), summary to copy
-- [ ] 5. Phone: a second listener on the home network with its own secret, the QR code, the
+- [x] 5. Phone: a second listener on the home network with its own secret, the QR code, the
       firewall check; no Run there
 - [ ] 6. The skill: `SKILL.md`, references, the self-test, the install script (link and hook),
       README
@@ -53,3 +53,13 @@ put two questions on the page (pill, sidebar entry, toast); answering them woke 
 partly works, what works, questions and ideas (in the pane, without clipboard access, it opens in
 the viewer instead). Tests no longer show desktop notifications (`REVIEW_DESK_NO_NOTIFY`); one
 test before that fix may have shown one on the user's desktop.
+
+**Phase 5** (2026-11-13): 41 tests on both Pythons (the phone's server tests now run once, from a
+shared base). The QR encoder (byte mode, level M, versions 1–10) reads back with OpenCV at every
+version. Checked live: "Let my phone in" opened a second listener on 192.168.1.20 with its own
+secret and showed the QR code; the phone's page (opened at phone size) was live, had no Run and no
+phone switch, and offered only picture/log/file; turning it off closed the listener (only
+127.0.0.1 left). Tests cover the guards: no way in without the code or under another host name,
+the desk's own secret doesn't work there, files need the phone's cookie, no Run, no switch, no
+quit. The firewall is only asked (FedoraWorkstation lets 1025–65535 through), once per opening.
+Also: the start of a Run is reported before its output can arrive (a race in a test).

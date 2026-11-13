@@ -356,6 +356,17 @@ fieldset.q .how { font-size: 12.5px; color: var(--dim); margin: -4px 0 8px; }
 .opt .other-text { flex: 1; background: transparent; border: 0; border-bottom: 1px dashed var(--border); padding: 2px 0; outline: none; }
 .opt .other-text:focus { border-bottom-color: var(--accent); }
 
+dialog.phone { width: min(440px, calc(100vw - 32px)); }
+.phone-body { padding: 14px 18px 18px; display: grid; gap: 10px; justify-items: start; }
+.phone-body p { margin: 0; }
+.phone-body .dim { color: var(--dim); font-size: 13.5px; }
+.phone-body .qr { justify-self: center; width: 240px; height: 240px; padding: 0; border-radius: 12px; overflow: hidden; background: #fff; }
+.phone-body .qr svg { width: 100%; height: 100%; display: block; }
+.phone-body .link { font-size: 12px; color: var(--dim); word-break: break-all; justify-self: stretch; text-align: center; }
+.phone-body .warn { border: 1px solid color-mix(in srgb, var(--partly) 45%, var(--border)); background: color-mix(in srgb, var(--partly) 10%, var(--panel)); border-radius: 10px; padding: 10px 12px; justify-self: stretch; }
+.phone-body .warn pre { margin: 6px 0 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.phone-body .primary { display: inline-flex; align-items: center; gap: 7px; }
+
 .overall { margin-top: 36px; }
 .overall h2 { font-size: 16px; margin: 0 0 4px; }
 .overall p { color: var(--dim); margin: 0; }
@@ -389,6 +400,7 @@ fieldset.q .how { font-size: 12.5px; color: var(--dim); margin: -4px 0 8px; }
   .head .row { flex-wrap: wrap; }
   .head .actions { margin-left: 0; width: 100%; justify-content: space-between; }
   .head .send { flex-direction: row-reverse; align-items: center; justify-content: space-between; width: 100%; }
+  .head { position: static; }
   .head .status { flex-wrap: wrap; }
   .field { grid-template-columns: 1fr; gap: 0; }
   .item { padding: 12px; }
