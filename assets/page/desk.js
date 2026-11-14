@@ -57,6 +57,7 @@ const S = {
   failed: null,
   live: false,
   handing: false,
+  flying: false,
   drafts: {},
   audio: null,
   runs: new Map(),      // the open round's Run output, by code block
@@ -527,23 +528,96 @@ function confirmOpen() {
   });
 }
 
-async function handBack() {
-  if (S.handing || !S.current) return;
-  if (!(await confirmOpen())) return;
-  S.handing = true;
-  refreshHead();
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)");
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+const anim = (node, frames, opts) => node.animate(frames, { fill: "forwards", easing: "ease-in-out", ...opts }).finished.catch(() => {});
+
+/**
+ * The hand-back animation: the button folds into an envelope, dashes to a tray that only appears
+ * now, "Sent" lights up once the desk has it, and the button springs back where an empty outline
+ * held its place. `r` is the button's box, `request` the hand-back itself (a failure ends the
+ * animation early and is thrown again), `back` puts the real button back.
+ */
+async function flyAway(r, label, request, back) {
+  const root = el("div", "fx");
+  const put = (cls, html, box) => {
+    const n = el("div", cls, html);
+    Object.assign(n.style, Object.fromEntries(Object.entries(box).map(([k, v]) => [k, `${v}px`])));
+    root.append(n);
+    return n;
+  };
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const trayH = r.height + 12;
+  const trayX = Math.max(12, r.left - 28 - 92);
+  const ghost = put("fx-ghost", "", { left: r.left, top: r.top, width: r.width, height: r.height });
+  const tray = put("fx-tray", `<span class="in">${icon("works")}${esc(t("sent.tray"))}</span>`, { left: trayX, top: cy - trayH / 2, height: trayH });
+  const clone = put("fx-clone", esc(label), { left: r.left, top: r.top, width: r.width, height: r.height });
+  const bars = [-8, -1, 6].map((o) => put("fx-bar", "", { left: cx - 30, top: cy + o }));
+  const env = put("fx-env", '<i class="flap"></i>', { left: cx, top: cy });
+  const flap = $(".flap", env);
+  document.body.append(root);
+  const dx = trayX + 46 - cx;
   try {
+    await Promise.all([
+      anim(clone, [{ transform: "none" }, { transform: "scale(0.2, 0.72)" }], { duration: 360 }),
+      anim(ghost, [{ opacity: 0 }, { opacity: 1 }], { duration: 300 }),
+      anim(tray, [{ opacity: 0, transform: "scale(0.92)" }, { opacity: 1, transform: "none" }], { duration: 300, delay: 120 }),
+    ]);
+    anim(clone, [{ opacity: 1 }, { opacity: 0 }], { duration: 120 });
+    await anim(env, [{ opacity: 0, transform: "scale(0.6)" }, { opacity: 1, transform: "none" }], { duration: 120 });
+    await anim(flap, [{ transform: "rotateX(180deg)" }, { transform: "rotateX(0)" }], { duration: 260 });
+    bars.forEach((b, i) => anim(b, [{ opacity: 0, transform: "none" }, { opacity: 0.6, offset: 0.3 }, { opacity: 0, transform: `translateX(${dx}px)` }], { duration: 620, delay: i * 40 }));
+    await anim(env, [{ transform: "none" }, { transform: "scale(1.1) rotate(6deg)", offset: 0.15 }, { transform: `translateX(${dx}px)` }], { duration: 620, easing: "cubic-bezier(0.5, 0, 0.2, 1)" });
+    anim(env, [{ opacity: 1, transform: `translateX(${dx}px)` }, { opacity: 0, transform: `translateX(${dx}px) scale(0.4)` }], { duration: 160 });
+    await request;
+    tray.classList.add("ok");
+    await anim($(".in", tray), [{ opacity: 0 }, { opacity: 1 }], { duration: 220 });
+    await pause(900);
+    back();
+    await Promise.all([anim(tray, [{ opacity: 1 }, { opacity: 0 }], { duration: 300 }), anim(ghost, [{ opacity: 1 }, { opacity: 0 }], { duration: 300 })]);
+  } finally {
+    root.remove();
+  }
+}
+
+async function handBack() {
+  if (S.handing || S.flying || !S.current) return;
+  if (!(await confirmOpen())) return;
+  const handBtn = $(".head .hand");
+  const rect = handBtn.getBoundingClientRect();
+  const label = handBtn.textContent.trim();
+  const round = S.current;
+  S.handing = true;
+  S.flying = !REDUCED.matches;
+  refreshHead();
+  const request = (async () => {
     if (!(await flushNow())) throw new Error(S.failed || t("save.waiting"));
-    const r = await api("/api/send", { round: S.current, message: S.drafts[S.current] || "" });
-    S.drafts[S.current] = "";
-    S.round.state.sent = r.sent;
-    const entry = summary();
-    if (entry) Object.assign(entry, { sent: r.sent, read: false });
+    const r = await api("/api/send", { round, message: S.drafts[round] || "" });
+    S.drafts[round] = "";
+    if (S.current === round) {
+      S.round.state.sent = r.sent;
+      const entry = summary();
+      if (entry) Object.assign(entry, { sent: r.sent, read: false });
+    }
+    return r;
+  })();
+  request.catch(() => {});
+  const back = () => {
+    S.handing = false;
+    S.flying = false;
+    refreshHead();
+    const box = $(".head .handbox");
+    if (box) anim(box, [{ transform: "scale(0.15, 0.8)", opacity: 0 }, { transform: "scale(1.06)", opacity: 1, offset: 0.7 }, { transform: "none", opacity: 1 }], { duration: 520, easing: "cubic-bezier(0.34, 1.56, 0.64, 1)" });
+  };
+  try {
+    if (S.flying) await flyAway(rect, label, request, back);
+    const r = await request;
     toast(r.listening ? t("handed.listening") : t("handed.later"));
   } catch (e) {
     toast(t("hand.failed", { e: e.message }));
   } finally {
     S.handing = false;
+    S.flying = false;
     refreshHead();
     renderSide();
   }
@@ -796,9 +870,10 @@ function renderHead(head) {
   head.querySelectorAll(".jump").forEach((b) => (b.onclick = () => jumpTo(b.dataset.v)));
   const hand = $(".hand", head);
   $("span", hand).textContent = S.handing ? t("handing") : state.sent ? t("hand.again") : t("hand.back");
-  hand.disabled = S.handing;
+  hand.disabled = S.handing || S.flying;
   hand.onclick = () => handBack();
   const box = $(".handbox", head);
+  box.classList.toggle("away", S.flying);
   const msg = $(".hand-msg", head);
   msg.placeholder = t("hand.msg.ph");
   msg.value = S.drafts[S.current] || "";
