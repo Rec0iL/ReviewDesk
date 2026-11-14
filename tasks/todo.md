@@ -88,3 +88,8 @@ Fixed:
 - the page offers a reload when Review Desk itself was updated.
 A live camera preview on the phone needs https (browsers only give the camera stream to secure
 pages); declined for now.
+
+**Plans and hand-back message** (2026-11-14): `kind: plan` rounds (plan words, no severity, copy of
+the plan only: plans stay where the user keeps them), a message field on the hand-back button
+(shown first by `wait`, kept in `answers.md`), a collapsible sidebar (button, Ctrl+B). 51 tests;
+checked in the browser pane (hover field, sidebar, plan wording in German).

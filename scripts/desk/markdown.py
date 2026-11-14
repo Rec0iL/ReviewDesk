@@ -2,7 +2,7 @@
 shows.
 
 The format (see `references/checklist.md`):
-- an optional header between `---` lines (`title:`, `about:`, `commit:`, `branch:`, `log:`);
+- an optional header between `---` lines (`title:`, `about:`, `commit:`, `branch:`, `log:`, `kind:` (`plan` for a plan to comment on));
 - `# Title (about 15 minutes)`, intro paragraphs, bullets and code;
 - `## 1. Sections`;
 - `- [ ] items`, continued on lines indented under them, each with an optional `{#name}` at the

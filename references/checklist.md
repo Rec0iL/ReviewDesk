@@ -41,6 +41,8 @@ Use the projector (DP-3) and headphones.
 - **Header** (optional), between `---` lines at the very top:
   - `title:` overrides the title from the `#` line;
   - `about:` the time it takes;
+  - `kind: plan` makes it a plan to comment on (verdicts read Agree / Change it / Unclear, "Send
+    comments", no severity). Each step is an item; see "Plans on the desk" in `SKILL.md`;
   - `commit:` a commit hash the page can show with its diff;
   - `log:` log files, comma-separated, absolute, `~/…`, or relative to the project. The user picks
     lines from them to attach.

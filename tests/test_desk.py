@@ -248,6 +248,13 @@ class StoreTest(Temp):
         self.rounds.send("sample")
         self.assertNotIn("Message with the hand-back", store.answers_md("sample", self.rounds.doc("sample"), self.rounds.state("sample")))
 
+    def test_plan_round_is_marked_in_header_and_answers(self):
+        write_round(self.root, "plan", "---\nkind: plan\n---\n# A plan\n\n## 1. Steps\n\n- [ ] First step {#one}\n")
+        doc = self.rounds.doc("plan")
+        self.assertEqual(doc["meta"]["kind"], "plan")
+        self.assertIn("This is a review of a plan", store.answers_md("plan", doc, self.rounds.state("plan", doc)))
+        self.assertNotIn("This is a review of a plan", store.answers_md("sample", self.rounds.doc("sample"), self.rounds.state("sample")))
+
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
         self.rounds.send("sample")

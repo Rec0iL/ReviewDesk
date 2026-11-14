@@ -93,9 +93,15 @@ function pickLang() {
   return (navigator.language || "en").toLowerCase().startsWith("de") ? "de" : "en";
 }
 
+/** A round with `kind: plan` in its header is a plan to comment on: the page says so in its words. */
+function isPlan() {
+  return Boolean(S.round && S.round.doc && S.round.doc.meta && S.round.doc.meta.kind === "plan");
+}
+
 function t(key, vars = {}) {
   const words = window.I18N[S.lang] || window.I18N.en;
-  let s = words[key] ?? window.I18N.en[key] ?? key;
+  const plan = isPlan() ? words["plan." + key] ?? window.I18N.en["plan." + key] : undefined;
+  let s = plan ?? words[key] ?? window.I18N.en[key] ?? key;
   for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
   return s;
 }
@@ -1091,7 +1097,7 @@ function refreshCard(box, b) {
   box.className = `item${a.verdict ? " v-" + a.verdict : " open"}${a.retest && !a.verdict ? " retesting" : ""}`
     + `${last.round === S.current && last.item === b.id ? " here" : ""}`;
   for (const v of VERDICTS) parts.verdicts[v].setAttribute("aria-pressed", String(a.verdict === v));
-  parts.severity.hidden = a.verdict !== "change";
+  parts.severity.hidden = a.verdict !== "change" || isPlan();
   for (const s of SEVERITIES) parts.severities[s].setAttribute("aria-pressed", String(a.severity === s));
   parts.note.placeholder = a.verdict ? t(`note.${a.verdict}`) : t("note");
   parts.note.hidden = !a.verdict && !a.note.trim() && parts.note !== document.activeElement;

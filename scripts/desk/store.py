@@ -332,6 +332,9 @@ def answers_md(slug, doc, state):
     out = [f"# {doc['title']}: answers", "",
            f"Round {state['round']} · {'handed back ' + state['sent'] if state['sent'] else 'not handed back yet'} · {tally}", "",
            f"Files are in `{slug}/files/`, next to this file.", ""]
+    if doc.get("meta", {}).get("kind") == "plan":
+        out[2:2] = ["", "This is a review of a plan: Works = agreed, Partly = agreed with changes, "
+                        "Needs change = change it, Can't test = unclear, Skipped = skip it."]
     if state.get("message") and state.get("sent"):
         out[2:2] = ["", f"Message with the hand-back: {state['message']}"]
     for section in doc["sections"]:

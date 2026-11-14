@@ -42,6 +42,8 @@ the project around the current folder; `--project PATH` names another.
    "Claude is listening".
 4. **Act on the answers.** Read the printed answers (they are also in `.review/<round>/answers.md`;
    their attachments are in `.review/<round>/files/`, and the Read tool shows pictures). Then:
+   - if they typed a message with the hand-back, it comes right after "Results from my review are
+     in, read them.": it is what they want you to do next, besides the answers;
    - fix what needs a change, run the tests, commit as the project's rules say;
    - answer their questions: `review-desk reply <round> <item> "…"` (`--to <message id>` for a
      particular question or idea; `<item>` is `overall` for the round's own thread);
@@ -79,6 +81,36 @@ on the page: `review-desk ask` with JSON shaped like your chat question tool (se
 - Name log files in the header (`log: ~/.local/state/app/log.txt`) so the user can attach lines
   from them; name the commit (`commit: abc1234`) so they can look at what changed.
 - After a fix, prefer `retest` on the items over writing a new round; a new round is for new work.
+
+## Plans on the desk
+
+The user can comment on a plan the same way they check work. A plan is a round with `kind: plan` in
+its header: each step or decision is an item, each part of the plan a `##` section, the reasoning
+sits as text under it. The page then says **Agree / Agree, with changes / Change it / Unclear /
+Skip** and **Send comments**, and hides "how bad".
+
+```markdown
+---
+kind: plan
+---
+# Plan: login rework (about 5 minutes)
+
+## 1. Approach
+
+- [ ] Sessions move to signed cookies. {#cookies}
+      Why: no server-side store to run; the token carries the user id.
+```
+
+- **Where plans live is the user's choice.** The desk only receives a copy: leave your plan where it
+  already is (plan mode, `tasks/todo.md`, `~/.claude/plans/`) and change no structure. Ask once per
+  project, the first time, where plans are kept, and say in the project's notes what they chose.
+- Write the round, `review-desk wait` in the background, read the comments (`Partly` and
+  `Needs change` mean revise that step, `Can't test` means it is unclear: answer or reword).
+- Revise by editing the checklist and `retest`ing the changed steps with a note on what changed;
+  their earlier comment moves into the step's history. Build only after every step is agreed or the
+  user says go in the chat.
+- A hand-back message ("continue with milestone X", "commit and push") is the user's own words in
+  the chat sense: act on what it asks, but a push or merge still follows the rules of the project.
 
 ## Commands
 
