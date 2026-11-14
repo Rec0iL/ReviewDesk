@@ -91,6 +91,7 @@ class Rounds:
             "items": items,
             "overall": {"note": "", "files": [], "messages": [], **saved.get("overall", {})},
             "sent": saved.get("sent"),
+            "message": saved.get("message") or "",
             "changed": saved.get("changed"),
         }
 
@@ -225,9 +226,10 @@ class Rounds:
 
         return self.edit(slug, change)
 
-    def send(self, slug):
-        """The round handed back to Claude."""
-        return self.edit(slug, lambda doc, state: state.update(sent=now()) or state["sent"])
+    def send(self, slug, message=""):
+        """The round handed back to Claude, with the words the user typed on the button (if any)."""
+        message = text(message).strip()[:2000]
+        return self.edit(slug, lambda doc, state: state.update(sent=now(), message=message) or state["sent"])
 
     def retest(self, slug, item_ids, note="", notes=None):
         """Items back for another look: what they had goes into their history, a new round starts
@@ -251,6 +253,7 @@ class Rounds:
                 a.update(verdict="", severity="", note="", files=[])
                 a["retest"] = {"round": state["round"], "note": text(notes.get(item_id, note)), "at": now()}
             state["sent"] = None
+            state["message"] = ""
             return state["round"]
 
         return self.edit(slug, change)
@@ -329,6 +332,8 @@ def answers_md(slug, doc, state):
     out = [f"# {doc['title']}: answers", "",
            f"Round {state['round']} · {'handed back ' + state['sent'] if state['sent'] else 'not handed back yet'} · {tally}", "",
            f"Files are in `{slug}/files/`, next to this file.", ""]
+    if state.get("message") and state.get("sent"):
+        out[2:2] = ["", f"Message with the hand-back: {state['message']}"]
     for section in doc["sections"]:
         listed = list(markdown.items(section["blocks"]))
         if not listed:

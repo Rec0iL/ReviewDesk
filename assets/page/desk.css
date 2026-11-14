@@ -108,6 +108,27 @@ main { overflow-y: auto; min-height: 0; }
 .head .titles { min-width: 0; }
 .head .send { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
 .head .hand { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; }
+/* Button and message field are one thing: on hover the field slides out to the left of the button. */
+.handbox { display: flex; align-items: stretch; border: 1px solid var(--accent); border-radius: 9px; overflow: hidden; background: var(--control); }
+.handbox .hand { border: 0; border-radius: 0; }
+.handbox .hand-msg {
+  width: 0; min-width: 0; padding: 0; border: 0; outline: 0; background: transparent;
+  opacity: 0; transition: width 0.18s ease, padding 0.18s ease, opacity 0.12s ease;
+}
+.handbox:hover .hand-msg, .handbox:focus-within .hand-msg, .handbox.has-text .hand-msg, .handbox.open .hand-msg {
+  width: min(280px, 32vw); padding: 0 12px; opacity: 1;
+}
+.handbox:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
+.handbox .hand-more { display: none; border: 0; border-radius: 0; background: transparent; padding: 0 8px; color: var(--dim); }
+@media (hover: none) { .handbox .hand-more { display: inline-flex; align-items: center; } }
+.side-toggle { flex: none; }
+.brand .side-toggle { margin-left: auto; }
+#side-show { display: none; position: absolute; top: 12px; left: 12px; z-index: 5; }
+.desk { position: relative; }
+.desk.collapsed { grid-template-columns: 0 1fr; }
+.desk.collapsed .side { visibility: hidden; overflow: hidden; border-right: 0; }
+.desk.collapsed #side-show { display: inline-flex; }
+.desk.collapsed .head { padding-left: 52px; }
 .head .listening { font-size: 12px; color: var(--faint); display: inline-flex; align-items: center; gap: 6px; cursor: help; }
 .head .listening::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .head .listening.on { color: var(--dim); }
@@ -423,6 +444,10 @@ dialog.phone { width: min(440px, calc(100vw - 32px)); }
   main { overflow: visible; }
   .side { border-right: 0; border-bottom: 1px solid var(--border); min-width: 0; }
   .side h2, .side .foot { display: none; }
+  .side-toggle { display: none !important; }
+  .desk.collapsed { grid-template-columns: minmax(0, 1fr); }
+  .desk.collapsed .side { visibility: visible; }
+  .desk.collapsed .head { padding-left: 0; }
   .views { display: flex; padding: 0 12px 6px; }
   .views .view { width: auto; }
   .asks-pill { right: 12px; bottom: 12px; }

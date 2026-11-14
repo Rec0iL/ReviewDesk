@@ -173,7 +173,10 @@ def show_events(root, events):
         if e["type"] == "send" and e.get("round") not in shown:
             slug = e["round"]
             shown.add(slug)
-            print(f"Handed back at {e['at']}: {slug}. The answers ({folder / slug / 'answers.md'}):\n")
+            print("Results from my review are in, read them.")
+            if e.get("message"):
+                print(e["message"])
+            print(f"\nHanded back at {e['at']}: {slug}. The answers ({folder / slug / 'answers.md'}):\n")
             try:
                 print(answers_text(rounds, slug))
             except (OSError, ValueError) as err:

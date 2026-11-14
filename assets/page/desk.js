@@ -17,6 +17,8 @@ const ICONS = {
   idea: '<path d="M9 17.5h6M10 20.5h4"/><path d="M12 3.5a5.5 5.5 0 0 0-3.2 10c.7.5 1.2 1.3 1.2 2.2h4c0-.9.5-1.7 1.2-2.2A5.5 5.5 0 0 0 12 3.5z"/>',
   reply: '<path d="M9.5 8.5L5 13l4.5 4.5"/><path d="M5 13h9a5 5 0 0 0 5-5V6"/>',
   remove: '<path d="M7 7l10 10M17 7L7 17"/>',
+  panel: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9.5 5v14"/>',
+  message: '<path d="M5 6.5h14v9H11l-4 3.5v-3.5H5z"/>',
   send: '<path d="M4.5 12h13"/><path d="M12.5 6.5L18 12l-5.5 5.5"/>',
   bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5h4"/>',
   "bell-off": '<path d="M6 16.5V11a6 6 0 0 1 9.4-4.9M18 11v5.5l1.5 1.5H8"/><path d="M10 20.5h4"/><path d="M4 4l16 16"/>',
@@ -55,6 +57,7 @@ const S = {
   failed: null,
   live: false,
   handing: false,
+  drafts: {},
   audio: null,
   runs: new Map(),      // the open round's Run output, by code block
   view: "round",        // or "ideas": the Ideas board
@@ -525,7 +528,8 @@ async function handBack() {
   refreshHead();
   try {
     if (!(await flushNow())) throw new Error(S.failed || t("save.waiting"));
-    const r = await api("/api/send", { round: S.current });
+    const r = await api("/api/send", { round: S.current, message: S.drafts[S.current] || "" });
+    S.drafts[S.current] = "";
     S.round.state.sent = r.sent;
     const entry = summary();
     if (entry) Object.assign(entry, { sent: r.sent, read: false });
@@ -762,12 +766,18 @@ function renderHead(head) {
         + `${v === "open" ? "" : `<i style="background:${colour(v)}"></i>`}<b>${at}${c[v]}</b> ${esc(t("count." + v))}</button>`;
     })
     .join("");
+  const typing = document.activeElement && document.activeElement.classList.contains("hand-msg");
+  const caret = typing ? document.activeElement.selectionStart : 0;
   head.innerHTML = `
     <div class="row">
       <div class="titles"><h1>${esc(doc.title)}</h1><div class="meta">${meta.map((m) => `<span>${m}</span>`).join("")}</div></div>
       <div class="actions">
         <div class="send">
-          <button type="button" class="primary hand">${icon("send")}<span></span></button>
+          <div class="handbox">
+            <input type="text" class="hand-msg" maxlength="2000" autocomplete="off">
+            <button type="button" class="hand-more" tabindex="-1">${icon("message")}</button>
+            <button type="button" class="primary hand">${icon("send")}<span></span></button>
+          </div>
           <span class="listening ${listening ? "on" : ""}" title="${esc(listening ? t("listening.tip") : t("not.listening.tip"))}">${esc(listening ? t("listening") : t("not.listening"))}</span>
         </div>
       </div>
@@ -781,7 +791,25 @@ function renderHead(head) {
   const hand = $(".hand", head);
   $("span", hand).textContent = S.handing ? t("handing") : state.sent ? t("hand.again") : t("hand.back");
   hand.disabled = S.handing;
-  hand.onclick = handBack;
+  hand.onclick = () => handBack();
+  const box = $(".handbox", head);
+  const msg = $(".hand-msg", head);
+  msg.placeholder = t("hand.msg.ph");
+  msg.value = S.drafts[S.current] || "";
+  box.classList.toggle("has-text", Boolean(msg.value));
+  msg.oninput = () => {
+    S.drafts[S.current] = msg.value;
+    box.classList.toggle("has-text", Boolean(msg.value));
+  };
+  msg.onkeydown = (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); handBack(); }
+    if (e.key === "Escape") msg.blur();
+  };
+  const more = $(".hand-more", head);
+  more.title = more.ariaLabel = t("hand.msg.toggle");
+  more.onclick = () => { box.classList.toggle("open"); if (box.classList.contains("open")) msg.focus(); };
+  if (S.handboxOpen) box.classList.add("open");
+  if (typing) { msg.focus(); msg.setSelectionRange(caret, caret); }
   showSaved(head);
 }
 
@@ -1166,7 +1194,32 @@ function renderWords() {
   applyProject();
   renderConn();
   renderPrefs();
+  setSide(document.querySelector(".desk").classList.contains("collapsed") || sideWas);
+  sideWas = false;
 }
+
+// -- the sidebar can be folded away (Ctrl+B too); the choice is kept in this browser -----------------
+
+const SIDE = "review-desk:side-collapsed";
+
+function setSide(collapsed) {
+  document.querySelector(".desk").classList.toggle("collapsed", collapsed);
+  try { localStorage.setItem(SIDE, collapsed ? "1" : ""); } catch {}
+  const hide = $("#side-hide"), show = $("#side-show");
+  hide.innerHTML = icon("panel"); show.innerHTML = icon("panel");
+  hide.title = hide.ariaLabel = t("side.hide");
+  show.title = show.ariaLabel = t("side.show");
+}
+$("#side-hide").onclick = () => setSide(true);
+$("#side-show").onclick = () => setSide(false);
+addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    setSide(!document.querySelector(".desk").classList.contains("collapsed"));
+  }
+});
+let sideWas = false;
+try { sideWas = Boolean(localStorage.getItem(SIDE)); } catch {}
 
 $("#lang").onchange = (e) => {
   S.lang = e.target.value;

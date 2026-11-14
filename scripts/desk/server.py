@@ -548,8 +548,9 @@ def handler_for(desk, server_ref, on_phone=False):
             if path == "/api/run/stop":
                 return {"run": desk.runs.stop(data["id"])}
             if path == "/api/send":
-                sent = rounds.send(slug)
-                desk.events.add("send", round=slug)
+                message = str(data.get("message") or "")
+                sent = rounds.send(slug, message)
+                desk.events.add("send", round=slug, message=rounds.state(slug)["message"])
                 desk.broadcast(type="round", slug=slug, by="you", client=data.get("client"))
                 desk.broadcast(type="rounds")
                 return {"sent": sent, "listening": desk.listening()}

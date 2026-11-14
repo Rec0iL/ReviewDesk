@@ -237,6 +237,17 @@ class StoreTest(Temp):
         _, after = same()
         self.assertEqual((after["total"], after["open"]), (before["total"] + 1, before["open"] + 1))
 
+    def test_hand_back_message_is_kept_and_cleared_by_retest(self):
+        self.rounds.set_item("sample", "open", {"verdict": "change"})
+        self.rounds.send("sample", "  continue with the plan  ")
+        state = self.rounds.state("sample")
+        self.assertEqual(state["message"], "continue with the plan")
+        self.assertIn("Message with the hand-back: continue with the plan", store.answers_md("sample", self.rounds.doc("sample"), state))
+        self.rounds.retest("sample", ["open"], "Fixed.")
+        self.assertEqual(self.rounds.state("sample")["message"], "")
+        self.rounds.send("sample")
+        self.assertNotIn("Message with the hand-back", store.answers_md("sample", self.rounds.doc("sample"), self.rounds.state("sample")))
+
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
         self.rounds.send("sample")
@@ -482,12 +493,13 @@ class ServerTest(ServerBase):
             time.sleep(0.05)
         self.assertTrue(self.desk.listening())
         self.assertTrue(self.request("GET", "/api/state")[1]["listening"])
-        status, sent = self.request("POST", "/api/send", {"round": "sample"})
+        status, sent = self.request("POST", "/api/send", {"round": "sample", "message": "commit and push"})
         self.assertEqual(status, 200)
         self.assertTrue(sent["listening"])
         thread.join(5)
         status, answer = result["answer"]
         self.assertEqual([(e["type"], e["round"]) for e in answer["events"]], [("send", "sample")])
+        self.assertEqual(answer["events"][0]["message"], "commit and push")
         self.assertEqual(self.request("GET", "/api/wait?timeout=0.2")[1]["events"], [])  # once only
         rounds = self.request("GET", "/api/state")[1]["rounds"]
         self.assertTrue(rounds[0]["read"])
@@ -908,10 +920,11 @@ class CommandTest(Temp):
             self.assertIsNotNone(rt, "wait starts the desk")
             from desk.cli import call
             call(rt, "POST", "/api/item", {"round": "sample", "item": "open", "verdict": "works", "note": "Fine here."})
-            call(rt, "POST", "/api/send", {"round": "sample"})
+            call(rt, "POST", "/api/send", {"round": "sample", "message": "commit and push"})
             out, err = waiter.communicate(timeout=15)
             self.assertEqual(waiter.returncode, 0, err)
             self.assertIn("Handed back at", out)
+            self.assertTrue(out.startswith("Results from my review are in, read them.\ncommit and push\n"), out[:120])
             self.assertIn("**Works** · 1.1 {#open} · Open the window.", out)
             self.assertIn("  > Fine here.", out)
             self.assertIn("review-desk wait", out)
