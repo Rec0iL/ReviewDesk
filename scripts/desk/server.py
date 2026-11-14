@@ -173,7 +173,14 @@ class Desk:
         seen = {}
         for path in self.folder.glob("*/checklist.md"):
             try:
-                seen[path.parent.name] = path.stat().st_mtime_ns
+                # the checklist, and the pictures and videos it shows (Claude may replace one)
+                pictures = []
+                for src in re.findall(r"!\[[^\]]*\]\(([^)\s]+)\)", path.read_text(encoding="utf-8")):
+                    try:
+                        pictures.append((path.parent / src.removeprefix("./")).stat().st_mtime_ns)
+                    except OSError:
+                        pictures.append(0)
+                seen[path.parent.name] = (path.stat().st_mtime_ns, tuple(pictures))
             except OSError:
                 pass
         try:

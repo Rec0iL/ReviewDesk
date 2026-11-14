@@ -61,7 +61,7 @@ class Rounds:
         checklist = self.path(slug, "checklist.md")
         if not checklist.exists():
             raise ValueError(f"no round {slug!r}")
-        return markdown.parse(checklist.read_text(encoding="utf-8"), slug, files=f"/files/{slug}")
+        return markdown.parse(checklist.read_text(encoding="utf-8"), slug, files=markdown.Files(f"/files/{slug}", self.path(slug)))
 
     def state(self, slug, doc=None):
         """The round's answers, fitted to its checklist as it is now: answers follow their item

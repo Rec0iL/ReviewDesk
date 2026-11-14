@@ -24,6 +24,16 @@ NAME = re.compile(r"\s*\{#([A-Za-z0-9][\w.-]{0,63})\}\s*$")
 RUNNABLE = ("bash", "sh", "shell", "console")
 
 
+class Files(str):
+    """The URL of a round's folder that also knows where the folder is, so a picture's address can
+    carry the file's modification time: a picture Claude replaces then shows up as new."""
+
+    def __new__(cls, url, folder):
+        self = super().__new__(cls, url)
+        self.folder = folder
+        return self
+
+
 def inline(md, files=""):
     """Inline Markdown as HTML. Pictures and links to files of the round come from `files` (the
     URL of the round's folder); web links open in a new tab; other paths show as paths."""
@@ -36,9 +46,17 @@ def inline(md, files=""):
 
         def picture(m):
             alt, src = m.group(1), m.group(2)
+            video = re.search(r"\.(mp4|webm|mov|ogv)$", src, re.I)
             if not src.startswith(("http://", "https://")):
-                src = f"{files}/{quote(src.removeprefix('./'))}"
-            if re.search(r"\.(mp4|webm|mov|ogv)$", src, re.I):
+                own = src.removeprefix("./")
+                src = f"{files}/{quote(own)}"
+                folder = getattr(files, "folder", None)
+                if folder:
+                    try:
+                        src += f"?v={(folder / own).stat().st_mtime_ns}"
+                    except OSError:
+                        pass
+            if video:
                 return f'<video class="pic" src="{html.escape(src)}" title="{html.escape(alt)}" controls preload="metadata"></video>'
             return f'<img class="pic" src="{html.escape(src)}" alt="{html.escape(alt)}" loading="lazy">'
 

@@ -302,6 +302,16 @@ class StoreTest(Temp):
         self.assertIn("the user answers on idea mi1 (sample, item open", text)
         self.assertEqual(board_text(board, mark=True), "")
 
+    def test_a_replaced_picture_gets_a_new_address(self):
+        folder = write_round(self.root, "pic", "# P\n\n## 1. A\n\n- [ ] Look ![the bar](files/bar.png) {#look}\n")
+        (folder / "files").mkdir(exist_ok=True)
+        (folder / "files" / "bar.png").write_bytes(b"one")
+        first = self.rounds.doc("pic")["sections"][0]["blocks"][0]["html"]
+        self.assertRegex(first, r'src="/files/pic/files/bar\.png\?v=\d+"')
+        os.utime(folder / "files" / "bar.png", ns=(1, 1))       # Claude saves a new picture under the same name
+        second = self.rounds.doc("pic")["sections"][0]["blocks"][0]["html"]
+        self.assertNotEqual(first, second)
+
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
         self.rounds.send("sample")
