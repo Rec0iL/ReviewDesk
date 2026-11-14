@@ -66,7 +66,7 @@ const S = {
   ideas: [],
   ideaFilter: "all",
   questions: [],        // Claude's question sets waiting for answers
-  jump: null,           // the tally's last jump: {v, i}
+  jump: null,           // the tally's last jump: {v, id} (the item it went to)
   hidden: [],           // items the browser doesn't show (an extension hid or removed their cards)
   phoneOn: Boolean(BOOT.phone),
 };
@@ -212,6 +212,7 @@ async function openRound(slug, { keepPlace = false } = {}) {
   const moved = slug !== S.current;
   const round = overlay(await api(`/api/round/${encodeURIComponent(slug)}`), slug);
   const fromBoard = S.view !== "round";
+  if (moved) S.jump = null; // another round's items: the tally starts over
   S.current = slug;
   S.round = round;
   S.view = "round";
@@ -850,7 +851,8 @@ function renderHead(head) {
   const tally = [...VERDICTS, "open"]
     .filter((v) => c[v] || v === "open")
     .map((v) => {
-      const at = S.jump && S.jump.v === v && c[v] ? `${Math.min(S.jump.i, c[v] - 1) + 1}/` : "";
+      const k = S.jump && S.jump.v === v ? idsOf(v).indexOf(S.jump.id) : -1;
+      const at = k >= 0 ? `${k + 1}/` : "";
       return `<button type="button" class="jump" data-v="${v}" ${c[v] ? "" : "disabled"} title="${esc(t("jump.tip"))}">`
         + `${v === "open" ? "" : `<i style="background:${colour(v)}"></i>`}<b>${at}${c[v]}</b> ${esc(t("count." + v))}</button>`;
     })
@@ -914,7 +916,8 @@ function aboutText(text) {
 
 /** The tally's buttons: each click goes to the next item of that kind; another kind starts over. */
 function jumpTo(v) {
-  const ids = allItems(S.round.doc).map((it) => it.id).filter((id) => (S.round.state.items[id]?.verdict || "open") === v);
+  const all = allItems(S.round.doc).map((it) => it.id);
+  const ids = idsOf(v);
   if (!ids.length) return;
   checkHidden();
   if (!ids.some((id) => shown(card(id)))) {
@@ -924,16 +927,24 @@ function jumpTo(v) {
     $(".hidden-note")?.scrollIntoView({ block: "nearest" });
     return toast(t("hidden.jump"));
   }
-  let i = S.jump && S.jump.v === v ? (S.jump.i + 1) % ids.length : 0;
+  // On from the item the last click went to, by its place in the round: answered in between,
+  // it's no longer of this kind, and the next click goes to the first one after it, not one further.
+  const from = S.jump && S.jump.v === v ? all.indexOf(S.jump.id) : -1;
+  let i = from < 0 ? 0 : Math.max(ids.findIndex((id) => all.indexOf(id) > from), 0);
   while (!shown(card(ids[i]))) i = (i + 1) % ids.length; // past the ones the browser hides
-  S.jump = { v, i };
+  S.jump = { v, id: ids[i] };
   refreshHead();
   const target = card(ids[i]);
   target.scrollIntoView({ block: "center" });
   target.classList.remove("flash");
   void target.offsetWidth; // restart the animation
   target.classList.add("flash");
-  here(ids[S.jump.i]);
+  here(ids[i]);
+}
+
+/** The round's items with this answer ("open": none yet), in their order on the page. */
+function idsOf(v) {
+  return allItems(S.round.doc).map((it) => it.id).filter((id) => (S.round.state.items[id]?.verdict || "open") === v);
 }
 
 function refreshHead() {
