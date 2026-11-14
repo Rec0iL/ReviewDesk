@@ -19,6 +19,7 @@ const ICONS = {
   remove: '<path d="M7 7l10 10M17 7L7 17"/>',
   panel: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9.5 5v14"/>',
   message: '<path d="M5 6.5h14v9H11l-4 3.5v-3.5H5z"/>',
+  edit: '<path d="M5 19l.9-3.9L16 5a2 2 0 0 1 3 3L8.9 18.1z"/><path d="M14.5 6.5l3 3"/>',
   send: '<path d="M4.5 12h13"/><path d="M12.5 6.5L18 12l-5.5 5.5"/>',
   bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5h4"/>',
   "bell-off": '<path d="M6 16.5V11a6 6 0 0 1 9.4-4.9M18 11v5.5l1.5 1.5H8"/><path d="M10 20.5h4"/><path d="M4 4l16 16"/>',

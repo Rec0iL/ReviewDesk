@@ -226,6 +226,10 @@ class Desk:
         return {"project": proj.settings(self.root) | {"path": str(self.root)}, "rounds": rounds,
                 "listening": self.listening(), "version": asset_version()}
 
+    def last_sends(self):
+        """When each round was last handed back."""
+        return {e["round"]: e["at"] for e in self.events.all() if e["type"] == "send" and e.get("round")}
+
     def wait(self, timeout):
         """What Claude hasn't had yet (hand-backs, answers), as soon as there is some; marked as
         had when it goes out, so it goes out once."""
@@ -357,7 +361,7 @@ def handler_for(desk, server_ref, on_phone=False):
                         return self.fail(403, "not from the phone")
                     return self.send_json(200, desk.phone_status())
                 if path == "/api/ideas":
-                    return self.send_json(200, {"ideas": ideas(desk.rounds, desk.board)})
+                    return self.send_json(200, {"ideas": ideas(desk.rounds, desk.board, desk.last_sends())})
                 if path == "/api/questions":
                     return self.send_json(200, {"questions": desk.questions.pending()})
                 if path == "/api/runs":
@@ -552,12 +556,28 @@ def handler_for(desk, server_ref, on_phone=False):
                     if not idea:
                         raise ValueError("no such idea")
                     m = rounds.message(slug, data["item"], "comment", data["text"], reply_to=data["id"], message_id=data.get("reply_id"))
-                    desk.board.followup(slug, rounds.doc(slug)["title"], data["item"], data["id"], idea["text"], data["text"])
+                    desk.board.followup(slug, rounds.doc(slug)["title"], data["item"], data["id"], idea["text"], data["text"], m["id"])
                     desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
                 else:
                     m = desk.board.reply(data["id"], data["text"], sender="you")
                 desk.broadcast(type="ideas", client=data.get("client"))
                 return {"reply": m}
+            if path == "/api/idea/edit":
+                # your own words on an idea, until Claude has them
+                if slug:
+                    target = next((m for m in messages(rounds.state(slug), data["item"]) if m["id"] == data["target"]), None)
+                    sent = desk.last_sends().get(slug)
+                    if not target or target["from"] != "you":
+                        raise ValueError("that isn't yours to change")
+                    if (sent and target["at"] <= sent) or target["id"] in desk.board.followup_seen():
+                        raise ValueError("Claude has read that already")
+                    m = rounds.message(slug, data["item"], target["kind"], data["text"], message_id=target["id"])
+                    desk.board.reword_followup(target["id"], data["text"])
+                    desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
+                else:
+                    m = desk.board.edit(data["id"], data["text"], None if data["target"] == data["id"] else data["target"])
+                desk.broadcast(type="ideas", client=data.get("client"))
+                return {"message": m}
             if path == "/api/file/remove":
                 if rounds.remove_file(slug, data["item"], data["name"]):
                     (rounds.path(slug, "files") / os.path.basename(data["name"])).unlink(missing_ok=True)

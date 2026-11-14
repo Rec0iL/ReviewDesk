@@ -90,13 +90,11 @@ function renderIdeas() {
       const where = i.number ? `${i.number} ${plain(i.item_text)}` : t("overall.title");
       top.append(button("link where", `${esc(i.round_title)} · ${esc(where)}`, () => goTo(i.round, i.item)));
     }
-    const said = el("div", "said");
-    said.textContent = i.text;
-    card.append(top, said);
+    card.append(top, ideaText(i, i.id, i.text, i.editable, "said"));
     for (const r of i.replies) {
       const mine = r.from === "you";
       const reply = el("div", `reply ${mine ? "you" : ""}`, mine ? `<span class="avatar you">${icon("reply")}</span>` : `<span class="avatar">C</span>`);
-      reply.append(Object.assign(el("span"), { textContent: r.text }));
+      reply.append(ideaText(i, r.id, r.text, r.editable, "grow"));
       card.append(reply);
     }
     if (i.replies.some((r) => r.from !== "you")) card.append(ideaReplyBox(i));
@@ -105,6 +103,56 @@ function renderIdeas() {
   const key = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.key;
   main.replaceChildren(wrap);
   if (key) wrap.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+}
+
+/**
+ * An idea's words, or your own message on it. Yours can be changed until Claude has been given
+ * them (the pencil); then the words turn into a box with Save and Cancel.
+ */
+function ideaText(i, target, current, editable, cls) {
+  const key = `${i.round}|${i.item}|${i.id}|${target}`;
+  const wrap = el("div", cls);
+  if (S.ideaEditing !== key) {
+    wrap.append(Object.assign(el("span", "words"), { textContent: current }));
+    if (editable) {
+      wrap.append(button("icon-button edit-idea", icon("edit"), () => {
+        S.ideaEditing = key;
+        S.ideaEditText = undefined;
+        renderIdeas();
+        document.querySelector(`[data-key="edit:${CSS.escape(key)}"]`)?.focus();
+      }, t("ideas.edit")));
+    }
+    return wrap;
+  }
+  const box = el("textarea");
+  box.rows = 2;
+  box.dataset.key = `edit:${key}`;
+  box.value = S.ideaEditText ?? current;
+  box.oninput = () => (S.ideaEditText = box.value);
+  const done = () => { S.ideaEditing = null; S.ideaEditText = undefined; };
+  const save = async () => {
+    const text = box.value.trim();
+    if (!text) { box.focus(); return; }
+    try {
+      await api("/api/idea/edit", { round: i.round, item: i.item, id: i.id, target, text });
+      done();
+    } catch (e) {
+      toast(t("ask.failed", { e: e.message }));
+      done();
+    }
+    await loadIdeas();
+    renderIdeas();
+  };
+  box.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+    if (e.key === "Escape") { done(); renderIdeas(); }
+  };
+  wrap.append(box, el("div", "edit-row"));
+  $(".edit-row", wrap).append(
+    button("primary", esc(t("ideas.save")), save),
+    button("quiet", esc(t("ideas.cancel")), () => { done(); renderIdeas(); }),
+  );
+  return wrap;
 }
 
 /** Your answer to what Claude said about an idea; Claude reads it with the next hand-back. */

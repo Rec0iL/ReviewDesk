@@ -374,6 +374,14 @@ dialog.editor .label { flex: 1; min-width: 200px; background: var(--bg); border:
 .idea-card.planned { border-left-color: var(--skipped); }
 .idea-card.done { border-left-color: var(--works); }
 .idea-card.declined { border-left-color: var(--faint); opacity: 0.8; }
+.idea-card .said { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.idea-card .words { flex: 1; min-width: 0; white-space: pre-wrap; }
+.idea-card .grow { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.idea-card .edit-idea { padding: 2px 5px; flex: none; opacity: 0.6; }
+.idea-card .edit-idea:hover { opacity: 1; }
+.idea-card .edit-idea svg { width: 13px; height: 13px; }
+.idea-card textarea { width: 100%; resize: vertical; background: var(--control); border: 1px solid var(--accent); border-radius: 10px; padding: 7px 10px; }
+.idea-card .edit-row { display: flex; gap: 8px; margin-top: 6px; }
 .idea-add { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 16px; }
 .idea-add textarea { flex: 1; min-width: 0; resize: vertical; background: var(--control); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
 .idea-add textarea:focus { outline: 0; border-color: var(--accent); }

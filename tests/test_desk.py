@@ -599,6 +599,32 @@ class ServerTest(ServerBase):
         got = [i for i in self.request("GET", "/api/ideas")[1]["ideas"] if i["id"] == "mb9"][0]
         self.assertEqual([r["from"] for r in got["replies"]], ["you"])
 
+    def test_your_words_on_an_idea_can_change_until_claude_has_them(self):
+        post = lambda **kw: self.request("POST", "/api/idea/edit", kw)
+        ideas = lambda: {i["id"]: i for i in self.request("GET", "/api/ideas")[1]["ideas"]}
+        # the board: the idea, then a reply of yours
+        self.request("POST", "/api/board/idea", {"id": "mb1", "text": "First words."})
+        self.assertTrue(ideas()["mb1"]["editable"])
+        self.assertEqual(post(round="", item="", id="mb1", target="mb1", text="Better words.")[0], 200)
+        self.desk.board.reply("mb1", "Hello.")
+        self.request("POST", "/api/idea/reply", {"round": "", "id": "mb1", "text": "Mine."})
+        reply = ideas()["mb1"]["replies"][1]
+        self.assertEqual((reply["text"], reply["editable"]), ("Mine.", True))
+        self.assertFalse(ideas()["mb1"]["replies"][0]["editable"])            # Claude's isn't yours
+        self.assertEqual(post(round="", item="", id="mb1", target=reply["id"], text="Mine, reworded.")[0], 200)
+        self.desk.board.mark_seen({"mb1"})                                      # Claude was shown it
+        self.assertFalse(ideas()["mb1"]["editable"])
+        self.assertEqual(post(round="", item="", id="mb1", target="mb1", text="Too late.")[0], 400)
+        self.assertEqual(post(round="", item="", id="mb1", target=reply["id"], text="Too late.")[0], 400)
+        # an idea in a review: yours until the round is handed back
+        self.desk.rounds.message("sample", "open", "idea", "Cache it.", message_id="mi1")
+        self.assertTrue(ideas()["mi1"]["editable"])
+        self.assertEqual(post(round="sample", item="open", id="mi1", target="mi1", text="Cache it well.")[0], 200)
+        self.assertEqual(self.desk.rounds.state("sample")["items"]["open"]["messages"][0]["text"], "Cache it well.")
+        self.desk.events.add("send", round="sample")
+        self.assertFalse(ideas()["mi1"]["editable"])
+        self.assertEqual(post(round="sample", item="open", id="mi1", target="mi1", text="Too late.")[0], 400)
+
     def test_desktop_notification_only_without_a_page(self):
         log = self.root / "notified.txt"
         fake = self.root / "notify-send"
