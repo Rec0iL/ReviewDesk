@@ -22,6 +22,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from desk import markdown, project, store  # noqa: E402
+from desk.store import Board  # noqa: E402
 from desk.server import make_server  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
@@ -254,6 +255,28 @@ class StoreTest(Temp):
         self.assertEqual(doc["meta"]["kind"], "plan")
         self.assertIn("This is a review of a plan", store.answers_md("plan", doc, self.rounds.state("plan", doc)))
         self.assertNotIn("This is a review of a plan", store.answers_md("sample", self.rounds.doc("sample"), self.rounds.state("sample")))
+
+    def test_board_ideas_belong_to_no_review_and_are_shown_once(self):
+        board = Board(project.ensure(self.root))
+        first = board.add("  a dark mode for the phone  ")
+        self.assertEqual((first["text"], first["status"]), ("a dark mode for the phone", "new"))
+        with self.assertRaises(ValueError):
+            board.add("   ")
+        listed = [i for i in store.ideas(self.rounds, board) if i.get("board")]
+        self.assertEqual([(i["id"], i["round"], i["seen"]) for i in listed], [(first["id"], "", False)])
+        self.assertEqual([m["id"] for m in board.unseen()], [first["id"]])
+        board.mark_seen({first["id"]})
+        self.assertEqual(board.unseen(), [])
+        board.add("a dark mode, also for the desk", first["id"])      # reworded: Claude reads it again
+        self.assertEqual(len(board.unseen()), 1)
+        board.status(first["id"], "planned")
+        board.reply(first["id"], "Next milestone.")
+        got = [i for i in store.ideas(self.rounds, board) if i.get("board")][0]
+        self.assertEqual((got["status"], [r["text"] for r in got["replies"]]), ("planned", ["Next milestone."]))
+        with self.assertRaises(ValueError):
+            board.status("nope", "done")
+        board.remove(first["id"])
+        self.assertEqual(board.all(), [])
 
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
@@ -927,6 +950,7 @@ class CommandTest(Temp):
             self.assertIsNotNone(rt, "wait starts the desk")
             from desk.cli import call
             call(rt, "POST", "/api/item", {"round": "sample", "item": "open", "verdict": "works", "note": "Fine here."})
+            call(rt, "POST", "/api/board/idea", {"id": "mb1", "text": "Export the answers as PDF."})
             call(rt, "POST", "/api/send", {"round": "sample", "message": "commit and push"})
             out, err = waiter.communicate(timeout=15)
             self.assertEqual(waiter.returncode, 0, err)
@@ -934,7 +958,16 @@ class CommandTest(Temp):
             self.assertTrue(out.startswith("Results from my review are in, read them.\ncommit and push\n"), out[:120])
             self.assertIn("**Works** · 1.1 {#open} · Open the window.", out)
             self.assertIn("  > Fine here.", out)
+            self.assertIn("New ideas from the Ideas tab", out)
+            self.assertIn("- mb1 [new]", out)
+            self.assertIn("Export the answers as PDF.", out)
             self.assertIn("review-desk wait", out)
+            self.assertIn("No new ideas", self.run_desk("ideas").stdout)      # shown once
+            self.assertIn("mb1", self.run_desk("ideas", "--all").stdout)
+            self.run_desk("reply", "board", "-", "On the list.", "--to", "mb1")
+            self.run_desk("idea", "board", "-", "mb1", "planned")
+            shown = [i for i in call(rt, "GET", "/api/ideas")["ideas"] if i.get("board")][0]
+            self.assertEqual((shown["status"], shown["replies"][0]["text"], shown["seen"]), ("planned", "On the list.", True))
         finally:
             waiter.kill()
             self.run_desk("stop")

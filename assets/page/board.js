@@ -73,6 +73,7 @@ function renderIdeas() {
   }
   head.append(chips);
   wrap.append(head);
+  wrap.append(ideaForm());
   const shown = S.ideas.filter((i) => filter === "all" || i.status === filter);
   if (!shown.length) {
     wrap.append(el("div", "empty-state small", `<div class="mark">${icon("idea")}</div><p>${esc(t(S.ideas.length ? "ideas.none.filter" : "ideas.none"))}</p>`));
@@ -81,8 +82,14 @@ function renderIdeas() {
     const card = el("article", `idea-card ${i.status}`);
     const top = el("div", "top");
     top.append(el("span", `chip ${i.status}`, esc(t("idea." + i.status))));
-    const where = i.number ? `${i.number} ${plain(i.item_text)}` : t("overall.title");
-    top.append(button("link where", `${esc(i.round_title)} · ${esc(where)}`, () => goTo(i.round, i.item)));
+    if (i.board) {
+      top.append(el("span", "where", esc(t("ideas.general"))));
+      top.append(el("span", `where ${i.seen ? "read" : ""}`, `· ${esc(t(i.seen ? "ideas.read" : "ideas.unread"))}`));
+      top.append(Object.assign(button("icon-button remove-idea", icon("remove"), () => removeIdea(i.id), t("ideas.remove")), { style: "margin-left:auto" }));
+    } else {
+      const where = i.number ? `${i.number} ${plain(i.item_text)}` : t("overall.title");
+      top.append(button("link where", `${esc(i.round_title)} · ${esc(where)}`, () => goTo(i.round, i.item)));
+    }
     const said = el("div", "said");
     said.textContent = i.text;
     card.append(top, said);
@@ -93,7 +100,50 @@ function renderIdeas() {
     }
     wrap.append(card);
   }
+  const typing = document.activeElement && document.activeElement.classList.contains("idea-text");
   main.replaceChildren(wrap);
+  if (typing) $(".idea-text", wrap).focus();
+}
+
+/** The box for a new idea: it belongs to no review, and Claude reads it with the next hand-back. */
+function ideaForm() {
+  const form = el("div", "idea-add");
+  const box = el("textarea", "idea-text");
+  box.rows = 2;
+  box.placeholder = t("ideas.add.ph");
+  box.value = S.ideaDraft || "";
+  box.oninput = () => (S.ideaDraft = box.value);
+  box.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addIdea(); }
+  };
+  form.append(box, button("primary", `${icon("idea")}<span>${esc(t("ideas.add"))}</span>`, addIdea));
+  return form;
+}
+
+async function addIdea() {
+  const text = (S.ideaDraft || "").trim();
+  if (!text) { document.querySelector(".idea-text")?.focus(); return; }
+  try {
+    await api("/api/board/idea", { id: newId(), text });
+    S.ideaDraft = "";
+    await loadIdeas();
+    renderSide();
+    renderIdeas();
+    toast(t("ideas.added"));
+  } catch (e) {
+    toast(t("ask.failed", { e: e.message }));
+  }
+}
+
+async function removeIdea(id) {
+  try {
+    await api("/api/board/idea", { id, delete: true });
+    await loadIdeas();
+    renderSide();
+    renderIdeas();
+  } catch (e) {
+    toast(t("ask.failed", { e: e.message }));
+  }
 }
 
 // -- Claude's question cards ----------------------------------------------------------------------

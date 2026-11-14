@@ -284,6 +284,14 @@ async function onEvent(event) {
     if (event.notify) announce(event);
     return;
   }
+  if (event.type === "ideas") {
+    if (event.notify) announce(event);
+    if (S.view === "ideas") {
+      await loadIdeas();
+      if (!document.querySelector("dialog[open]")) renderIdeas();
+    }
+    return;
+  }
   if (S.view === "ideas" && (event.type === "round" || event.type === "rounds")) {
     if (event.type === "round" && event.by === "claude" && event.notify) announce(event);
     await loadState();

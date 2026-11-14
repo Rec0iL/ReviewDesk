@@ -52,3 +52,15 @@ shows them when it next opens.
 - `.review/<round>/state.json`: the answers as data (the desk's; don't edit it).
 - `.review/questions.json`, `events.jsonl`: question cards and what happened.
 - `.review/desk.json`: the title and accent. `.review/.desk.log`: the desk's log.
+
+## Ideas that belong to no review
+
+The user adds them on the **Ideas** tab. They don't wake `wait`; each is printed once, after the
+answers of the next hand-back (and `status --hook` mentions them at session start).
+
+```bash
+review-desk ideas                              # the ones you haven't been shown yet (marks them shown)
+review-desk ideas --all                        # every one
+review-desk reply board - "On the list for M7." --to b1
+review-desk idea board - b1 planned            # new | planned | done | declined
+```

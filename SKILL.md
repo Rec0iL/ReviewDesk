@@ -49,13 +49,17 @@ the project around the current folder; `--project PATH` names another.
      particular question or idea; `<item>` is `overall` for the round's own thread);
    - send fixed items back: `review-desk retest <round> <item>… --note "what changed"`; their old
      answer moves into the item's history and they answer it again;
+   - the Ideas tab's own ideas (the user adds them there, they belong to no review) come after the
+     answers, once each: answer with `review-desk reply board - "…" --to <idea id>` and
+     `review-desk idea board - <idea id> planned|done|declined`; `review-desk ideas` lists them
+     again (`--all` for every one);
    - say what you make of an idea: `review-desk idea <round> <item> <message id> planned|done|declined`.
    Then start `review-desk wait` in the background again, as long as you expect more from them.
 5. **Done:** when everything works, say so in the chat. Approvals stay in the chat: merging,
    pushing, deleting, publishing, anything outward-facing. A hand-back is never an approval.
 
 When a session starts with a note like "Review Desk: answers waiting", run `review-desk wait`
-(it returns at once with them).
+(it returns at once with them). A note about new ideas on the Ideas tab means `review-desk ideas`.
 
 When a session starts with "Review Desk has an update", tell the user in one line and offer it;
 run `review-desk update` only after they agree (it pulls the new version, fast-forward only). A

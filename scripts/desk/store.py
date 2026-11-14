@@ -456,9 +456,91 @@ def checked_questions(data):
     return {"title": str(data.get("title", ""))[:200], "questions": out}
 
 
-def ideas(rounds):
-    """Every idea of every round, newest round first, with where it is and Claude's replies."""
+class Board:
+    """Ideas that belong to no review (`board.json`): the user's, added on the Ideas tab, with
+    Claude's replies and word on them. `seen` is when Claude was shown one (by `wait` or `ideas`)."""
+
+    def __init__(self, folder):
+        self.path = Path(folder) / "board.json"
+
+    def all(self):
+        return (read_json(self.path, {}) or {}).get("ideas", [])
+
+    def _edit(self, change):
+        with LOCK:
+            items = self.all()
+            result = change(items)
+            write_json(self.path, {"version": 1, "ideas": items})
+            return result
+
+    def add(self, body, idea_id=None):
+        """A new idea; the page names it itself (`idea_id`), so saving again only changes its text."""
+        body = text(body).strip()
+        if not body:
+            raise ValueError("an idea needs some words")
+        if idea_id is not None and not MESSAGE_ID.match(str(idea_id)):
+            raise ValueError("an idea id is a few letters and digits")
+
+        def change(items):
+            m = next((m for m in items if m["id"] == idea_id), None) if idea_id else None
+            if m:
+                m.update(text=body, edited=now())
+                m.pop("seen", None)   # reworded: Claude should read it again
+                return m
+            m = {"id": idea_id or next_id(items, "b"), "text": body, "at": now(), "status": "new", "replies": []}
+            items.append(m)
+            return m
+
+        return self._edit(change)
+
+    def remove(self, idea_id):
+        self._edit(lambda items: items.__setitem__(slice(None), [m for m in items if m["id"] != idea_id]))
+
+    def _find(self, items, idea_id):
+        m = next((m for m in items if m["id"] == idea_id), None)
+        if not m:
+            raise ValueError(f"no idea {idea_id} on the board")
+        return m
+
+    def status(self, idea_id, status):
+        if status not in IDEA_STATES:
+            raise ValueError(f"an idea's status is one of {', '.join(IDEA_STATES)}")
+        def change(items):
+            m = self._find(items, idea_id)
+            m["status"] = status
+            return m
+
+        return self._edit(change)
+
+    def reply(self, idea_id, body):
+        def change(items):
+            m = self._find(items, idea_id)
+            r = {"id": next_id(m["replies"], "c"), "text": text(body), "at": now()}
+            m["replies"].append(r)
+            return r
+
+        return self._edit(change)
+
+    def unseen(self):
+        return [m for m in self.all() if not m.get("seen")]
+
+    def mark_seen(self, ids):
+        def change(items):
+            for m in items:
+                if m["id"] in ids:
+                    m["seen"] = now()
+
+        self._edit(change)
+
+
+def ideas(rounds, board=None):
+    """Every idea: the board's first (they belong to no review), then those of every round, newest
+    round first, with where it is and Claude's replies."""
     out = []
+    for m in sorted(board.all() if board else [], key=lambda m: m["at"], reverse=True):
+        out.append({"round": "", "round_title": "", "item": "", "number": "", "item_text": "", "board": True,
+                    "id": m["id"], "text": m["text"], "status": m.get("status", "new"), "at": m["at"],
+                    "seen": bool(m.get("seen")), "replies": [{"text": r["text"], "at": r["at"]} for r in m["replies"]]})
     for slug in rounds.slugs():
         try:
             doc = rounds.doc(slug)

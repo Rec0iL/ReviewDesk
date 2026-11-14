@@ -16,6 +16,9 @@ folder (the git repository, or the folder itself), or the one `--project` names.
                            the same, each item with its own note (JSON: {"item": "note"})
     idea ROUND ITEM MESSAGE STATUS
                            an idea planned, done, declined (or new)
+    ideas [--all]          the Ideas tab's own ideas (they belong to no review) you haven't been
+                           shown yet; `wait` prints them too. Answer them with
+                           `reply board - TEXT --to ID` and `idea board - ID STATUS`
     ask [FILE|-] [--wait]  question cards on the page (JSON like the chat's question tool:
                            {"title", "questions": [{"question", "header", "multiSelect",
                            "options": [{"label", "description"}]}]}); the answers come
@@ -35,7 +38,7 @@ import webbrowser
 from pathlib import Path
 
 from . import project as proj
-from .store import Events, Rounds
+from .store import Board, Events, Rounds
 
 SCRIPT = Path(__file__).resolve().parent.parent / "review_desk.py"
 
@@ -129,12 +132,16 @@ def status(root, hook=False):
         return
     events = Events(folder)
     waiting = events.waiting()
+    fresh = len(Board(folder).unseen())
     if hook:
         # One line for a new session, only when something waits.
+        if fresh and not waiting:
+            print(f"Review Desk: {fresh} new idea(s) on the Ideas tab of {root.name}. Run `review-desk ideas` and read them.")
         if waiting:
             what = ", ".join(sorted({e.get("round") or e.get("question", "?") for e in waiting}))
             print(f"Review Desk: answers waiting in {root.name} ({what}). "
-                  f"Run `review-desk wait` (it returns at once) and read them.")
+                  f"Run `review-desk wait` (it returns at once) and read them."
+                  + (f" {fresh} new idea(s) on the Ideas tab come with it." if fresh else ""))
         if newer:
             print(newer)
         return
@@ -158,6 +165,8 @@ def status(root, hook=False):
             presence = None
         if presence:
             print(f"  you are on {presence.get('round')} · {presence.get('item') or 'the round'} (since {presence.get('at')})")
+    if fresh:
+        print(f"  {fresh} new idea(s) on the Ideas tab, not read yet (`review-desk ideas`)")
     for e in waiting:
         print(f"  waiting for Claude: {e['type']} {e.get('round') or e.get('question', '')} at {e['at']}")
     if newer:
@@ -192,7 +201,26 @@ def show_events(root, events):
                 if a.get("note", "").strip():
                     print(f"  note: {a['note'].strip()}")
             print()
+    print(board_text(Board(folder), mark=True), end="")
     print("Run `review-desk wait` again in the background to hear the next hand-back.")
+
+
+def board_text(board, mark=False, every=False):
+    """The Ideas tab's own ideas Claude hasn't been shown yet (all of them with `every`), as text;
+    with `mark` they count as shown from now on."""
+    listed = board.all() if every else board.unseen()
+    if not listed:
+        return ""
+    out = ["New ideas from the Ideas tab (they belong to no review). Answer with "
+           "`review-desk reply board - \"…\" --to ID`, say what you make of one with "
+           "`review-desk idea board - ID planned|done|declined`:", ""]
+    for m in listed:
+        out.append(f"- {m['id']} [{m.get('status', 'new')}] ({m['at']}): {m['text']}")
+        for r in m["replies"]:
+            out.append(f"    Claude: {r['text']}")
+    if mark:
+        board.mark_seen({m["id"] for m in listed})
+    return "\n".join(out) + "\n\n"
 
 
 def answers_text(rounds, slug):
@@ -234,7 +262,8 @@ def claude(root, body):
     if rt:
         return call(rt, "POST", "/api/claude", body)
     from .server import claude_action
-    return claude_action(Rounds(proj.ensure(root)), body)[0]
+    folder = proj.ensure(root)
+    return claude_action(Rounds(folder), body, Board(folder))[0]
 
 
 def ask(root, source, then_wait=False):
@@ -351,6 +380,8 @@ def main(argv=None):
     p.add_argument("item")
     p.add_argument("message")
     p.add_argument("status", choices=("new", "planned", "done", "declined"))
+    p = sub.add_parser("ideas", parents=[common])
+    p.add_argument("--all", action="store_true", help="every idea, not only the ones not shown yet")
     p = sub.add_parser("ask", parents=[common])
     p.add_argument("file", nargs="?", help="the questions as JSON (- or nothing: stdin)")
     p.add_argument("--wait", action="store_true", help="then wait for the answers")
@@ -383,6 +414,9 @@ def main(argv=None):
         status(root, hook=args.hook)
     elif args.command == "wait":
         wait(root, args.timeout)
+    elif args.command == "ideas":
+        board = Board(proj.review_dir(root))
+        print(board_text(board, mark=True, every=args.all).rstrip() or "No new ideas on the Ideas tab.")
     elif args.command == "answers":
         print(answers_text(Rounds(proj.review_dir(root)), args.round))
     elif args.command in ("reply", "retest", "idea"):

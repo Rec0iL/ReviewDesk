@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import attach, markdown, phone, qr
 from . import project as proj
 from .runs import Runs
-from .store import LOCK, Events, Questions, Rounds, ideas
+from .store import LOCK, Board, Events, Questions, Rounds, ideas
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent.parent / "assets"
@@ -57,6 +57,7 @@ class Desk:
         self.rounds = Rounds(self.folder)
         self.events = Events(self.folder)
         self.questions = Questions(self.folder)
+        self.board = Board(self.folder)
         self.token = proj.token(self.root)
         self.clients = []
         self.clients_lock = threading.Lock()
@@ -356,7 +357,7 @@ def handler_for(desk, server_ref, on_phone=False):
                         return self.fail(403, "not from the phone")
                     return self.send_json(200, desk.phone_status())
                 if path == "/api/ideas":
-                    return self.send_json(200, {"ideas": ideas(desk.rounds)})
+                    return self.send_json(200, {"ideas": ideas(desk.rounds, desk.board)})
                 if path == "/api/questions":
                     return self.send_json(200, {"questions": desk.questions.pending()})
                 if path == "/api/runs":
@@ -536,6 +537,14 @@ def handler_for(desk, server_ref, on_phone=False):
                                              reply_to=data.get("to"), message_id=data["id"])
                 desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
                 return {"message": message}
+            if path == "/api/board/idea":
+                if data.get("delete"):
+                    desk.board.remove(data["id"])
+                    idea = None
+                else:
+                    idea = desk.board.add(data["text"], data.get("id"))
+                desk.broadcast(type="ideas", client=data.get("client"))
+                return {"idea": idea}
             if path == "/api/file/remove":
                 if rounds.remove_file(slug, data["item"], data["name"]):
                     (rounds.path(slug, "files") / os.path.basename(data["name"])).unlink(missing_ok=True)
@@ -572,8 +581,10 @@ def handler_for(desk, server_ref, on_phone=False):
                 desk.claude_did(None, "ask", title=asked["title"] or "Claude has a question", body=first, kind="questions")
                 return {"question": asked, "pages": desk.connected()}
             if path == "/api/claude":
-                result, notice = claude_action(rounds, data)
-                if notice:
+                result, notice = claude_action(rounds, data, desk.board)
+                if notice and data.get("round") == "board":
+                    desk.claude_did(None, kind="ideas", **notice)
+                elif notice:
                     desk.claude_did(slug, **notice)
                 else:
                     desk.broadcast(type="round", slug=slug, by="claude", what=data.get("action"), item=data.get("item"))
@@ -595,10 +606,23 @@ def handler_for(desk, server_ref, on_phone=False):
     return Handler
 
 
-def claude_action(rounds, data):
+def claude_action(rounds, data, board=None):
     """What Claude does through the command: a reply in a thread, items back for another look,
     its word on an idea. Returns the result and what to tell you about it (None: nothing)."""
     slug, action = data.get("round", ""), data.get("action")
+    if slug == "board":
+        # the Ideas tab's own ideas: `reply board - "text" --to ID`, `idea board - ID planned`
+        if board is None:
+            raise ValueError("no board here")
+        if action == "reply":
+            if not data.get("to"):
+                raise ValueError("which idea? (--to ID)")
+            r = board.reply(data["to"], data["text"])
+            first = (data["text"].strip().splitlines() or [""])[0][:140]
+            return {"message": r}, {"what": "reply", "title": "Claude replied · Ideas", "body": first}
+        if action == "idea":
+            return {"message": board.status(data["id"], data["status"])}, None
+        raise ValueError(f"Claude can't {action!r} on the board")
     title = rounds.doc(slug)["title"]
     if action == "reply":
         m = rounds.message(slug, data["item"], "reply", data["text"], sender="claude", reply_to=data.get("to"))

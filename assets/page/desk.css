@@ -374,6 +374,11 @@ dialog.editor .label { flex: 1; min-width: 200px; background: var(--bg); border:
 .idea-card.planned { border-left-color: var(--skipped); }
 .idea-card.done { border-left-color: var(--works); }
 .idea-card.declined { border-left-color: var(--faint); opacity: 0.8; }
+.idea-add { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 16px; }
+.idea-add textarea { flex: 1; min-width: 0; resize: vertical; background: var(--control); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
+.idea-add textarea:focus { outline: 0; border-color: var(--accent); }
+.idea-add button { display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 9px 14px; }
+.idea-card .where.read { color: var(--works); }
 .idea-card .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .idea-card .where { font-size: 12.5px; color: var(--dim); text-align: left; }
 .idea-card .where:hover { color: var(--accent-text); }
