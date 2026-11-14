@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import attach, markdown, phone, qr
 from . import project as proj
 from .runs import Runs
-from .store import LOCK, Board, Events, Questions, Rounds, ideas
+from .store import LOCK, Board, Events, Questions, Rounds, ideas, messages
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent.parent / "assets"
@@ -545,6 +545,19 @@ def handler_for(desk, server_ref, on_phone=False):
                     idea = desk.board.add(data["text"], data.get("id"))
                 desk.broadcast(type="ideas", client=data.get("client"))
                 return {"idea": idea}
+            if path == "/api/idea/reply":
+                # your answer on an idea from the Ideas tab; the idea may live in a review
+                if slug:
+                    idea = next((m for m in messages(rounds.state(slug), data["item"]) if m["id"] == data["id"]), None)
+                    if not idea:
+                        raise ValueError("no such idea")
+                    m = rounds.message(slug, data["item"], "comment", data["text"], reply_to=data["id"], message_id=data.get("reply_id"))
+                    desk.board.followup(slug, rounds.doc(slug)["title"], data["item"], data["id"], idea["text"], data["text"])
+                    desk.broadcast(type="round", slug=slug, by="you", item=data["item"], client=data.get("client"))
+                else:
+                    m = desk.board.reply(data["id"], data["text"], sender="you")
+                desk.broadcast(type="ideas", client=data.get("client"))
+                return {"reply": m}
             if path == "/api/file/remove":
                 if rounds.remove_file(slug, data["item"], data["name"]):
                     (rounds.path(slug, "files") / os.path.basename(data["name"])).unlink(missing_ok=True)

@@ -278,6 +278,30 @@ class StoreTest(Temp):
         board.remove(first["id"])
         self.assertEqual(board.all(), [])
 
+    def test_answering_claude_on_an_idea_reaches_claude_with_the_next_hand_back(self):
+        from desk.cli import board_text
+        board = Board(project.ensure(self.root))
+        mine = board.add("An idea of mine.")
+        board.mark_seen({mine["id"]})
+        board.reply(mine["id"], "Claude says hello.")
+        board.reply(mine["id"], "My answer.", sender="you")
+        self.assertEqual([m["id"] for m in board.unseen()], [mine["id"]])        # unseen again
+        shown = [i for i in store.ideas(self.rounds, board) if i.get("board")][0]
+        self.assertEqual([(r["from"], r["text"]) for r in shown["replies"]], [("claude", "Claude says hello."), ("you", "My answer.")])
+        text = board_text(board, mark=True)
+        self.assertIn("You: My answer.", text)
+        self.assertEqual(board_text(board, mark=True), "")
+        # an idea that lives in a review: the answer goes into its thread and to Claude
+        self.rounds.message("sample", "open", "idea", "Cache it.", message_id="mi1")
+        self.rounds.message("sample", "open", "reply", "Planned.", sender="claude", reply_to="mi1")
+        self.rounds.message("sample", "open", "comment", "Thanks, when?", reply_to="mi1", message_id="mr1")
+        board.followup("sample", "Sample check", "open", "mi1", "Cache it.", "Thanks, when?")
+        got = [i for i in store.ideas(self.rounds, board) if i["id"] == "mi1"][0]
+        self.assertEqual([(r["from"], r["text"]) for r in got["replies"]], [("claude", "Planned."), ("you", "Thanks, when?")])
+        text = board_text(board, mark=True)
+        self.assertIn("the user answers on idea mi1 (sample, item open", text)
+        self.assertEqual(board_text(board, mark=True), "")
+
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
         self.rounds.send("sample")
@@ -563,6 +587,17 @@ class ServerTest(ServerBase):
         self.assertEqual(self.request("POST", "/api/claude", {"action": "dance", "round": "sample"})[0], 400)
         status, _ = self.request("POST", "/api/message", {"round": "sample", "item": "open", "id": "mq1", "delete": True})
         self.assertEqual(status, 200)
+
+    def test_idea_reply_endpoint(self):
+        self.desk.rounds.message("sample", "open", "idea", "Cache it.", message_id="mi1")
+        status, out = self.request("POST", "/api/idea/reply", {"round": "sample", "item": "open", "id": "mi1", "text": "Why not now?", "reply_id": "mr1"})
+        self.assertEqual(status, 200)
+        self.assertEqual([f["text"] for f in self.desk.board.unseen_followups()], ["Why not now?"])
+        self.assertEqual(self.request("POST", "/api/idea/reply", {"round": "sample", "item": "open", "id": "nope", "text": "x", "reply_id": "mr2"})[0], 400)
+        self.request("POST", "/api/board/idea", {"id": "mb9", "text": "Mine."})
+        self.assertEqual(self.request("POST", "/api/idea/reply", {"round": "", "id": "mb9", "text": "More."})[0], 200)
+        got = [i for i in self.request("GET", "/api/ideas")[1]["ideas"] if i["id"] == "mb9"][0]
+        self.assertEqual([r["from"] for r in got["replies"]], ["you"])
 
     def test_desktop_notification_only_without_a_page(self):
         log = self.root / "notified.txt"
@@ -958,7 +993,7 @@ class CommandTest(Temp):
             self.assertTrue(out.startswith("Results from my review are in, read them.\ncommit and push\n"), out[:120])
             self.assertIn("**Works** · 1.1 {#open} · Open the window.", out)
             self.assertIn("  > Fine here.", out)
-            self.assertIn("New ideas from the Ideas tab", out)
+            self.assertIn("From the Ideas tab", out)
             self.assertIn("- mb1 [new]", out)
             self.assertIn("Export the answers as PDF.", out)
             self.assertIn("review-desk wait", out)

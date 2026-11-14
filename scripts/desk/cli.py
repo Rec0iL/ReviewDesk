@@ -132,7 +132,7 @@ def status(root, hook=False):
         return
     events = Events(folder)
     waiting = events.waiting()
-    fresh = len(Board(folder).unseen())
+    fresh = len(Board(folder).unseen()) + len(Board(folder).unseen_followups())
     if hook:
         # One line for a new session, only when something waits.
         if fresh and not waiting:
@@ -206,20 +206,25 @@ def show_events(root, events):
 
 
 def board_text(board, mark=False, every=False):
-    """The Ideas tab's own ideas Claude hasn't been shown yet (all of them with `every`), as text;
-    with `mark` they count as shown from now on."""
+    """What the Ideas tab holds that Claude hasn't been shown yet (every idea with `every`), as text:
+    ideas that belong to no review, with the thread on them, and the user's answers on ideas that
+    live in a review. With `mark` they count as shown from now on."""
     listed = board.all() if every else board.unseen()
-    if not listed:
+    follow = [] if every else board.unseen_followups()
+    if not listed and not follow:
         return ""
-    out = ["New ideas from the Ideas tab (they belong to no review). Answer with "
-           "`review-desk reply board - \"…\" --to ID`, say what you make of one with "
-           "`review-desk idea board - ID planned|done|declined`:", ""]
+    out = ["From the Ideas tab. Answer with `review-desk reply board - \"…\" --to ID`, say what you make of "
+           "an idea with `review-desk idea board - ID planned|done|declined` (for an idea in a review: "
+           "`review-desk reply ROUND ITEM \"…\" --to IDEA`):", ""]
     for m in listed:
-        out.append(f"- {m['id']} [{m.get('status', 'new')}] ({m['at']}): {m['text']}")
+        out.append(f"- {m['id']} [{m.get('status', 'new')}] ({m['at']}), not tied to a review: {m['text']}")
         for r in m["replies"]:
-            out.append(f"    Claude: {r['text']}")
+            out.append(f"    {'You' if r.get('from') == 'you' else 'Claude'}: {r['text']}")
+    for f in follow:
+        out.append(f"- the user answers on idea {f['idea']} ({f['round']}, item {f['item']}: \"{f['idea_text'][:80]}\") "
+                   f"at {f['at']}: {f['text']}")
     if mark:
-        board.mark_seen({m["id"] for m in listed})
+        board.mark_seen({m["id"] for m in listed}, {f["id"] for f in follow})
     return "\n".join(out) + "\n\n"
 
 

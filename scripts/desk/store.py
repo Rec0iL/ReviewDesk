@@ -336,7 +336,7 @@ def answers_md(slug, doc, state):
         out[2:2] = ["", "This is a review of a plan: Works = agreed, Partly = agreed with changes, "
                         "Needs change = change it, Can't test = unclear, Skipped = skip it."]
     if state.get("message") and state.get("sent"):
-        out[2:2] = ["", f"Message with the hand-back: {state['message']}"]
+        out[4:4] = [f"Message with the hand-back: {state['message']}", ""]
     for section in doc["sections"]:
         listed = list(markdown.items(section["blocks"]))
         if not listed:
@@ -457,20 +457,26 @@ def checked_questions(data):
 
 
 class Board:
-    """Ideas that belong to no review (`board.json`): the user's, added on the Ideas tab, with
-    Claude's replies and word on them. `seen` is when Claude was shown one (by `wait` or `ideas`)."""
+    """Ideas that belong to no review (`board.json`): the user's, added on the Ideas tab, with the
+    replies of both sides. `seen` is when Claude was shown one (by `wait` or `ideas`); a new reply
+    of the user's makes it unseen again. `followups` are the user's answers, from the Ideas tab, on
+    ideas that live in a review: Claude gets them the same way."""
 
     def __init__(self, folder):
         self.path = Path(folder) / "board.json"
 
+    def _data(self):
+        data = read_json(self.path, {}) or {}
+        return {"version": 1, "ideas": data.get("ideas", []), "followups": data.get("followups", [])}
+
     def all(self):
-        return (read_json(self.path, {}) or {}).get("ideas", [])
+        return self._data()["ideas"]
 
     def _edit(self, change):
         with LOCK:
-            items = self.all()
-            result = change(items)
-            write_json(self.path, {"version": 1, "ideas": items})
+            data = self._data()
+            result = change(data)
+            write_json(self.path, data)
             return result
 
     def add(self, body, idea_id=None):
@@ -481,7 +487,8 @@ class Board:
         if idea_id is not None and not MESSAGE_ID.match(str(idea_id)):
             raise ValueError("an idea id is a few letters and digits")
 
-        def change(items):
+        def change(data):
+            items = data["ideas"]
             m = next((m for m in items if m["id"] == idea_id), None) if idea_id else None
             if m:
                 m.update(text=body, edited=now())
@@ -494,10 +501,10 @@ class Board:
         return self._edit(change)
 
     def remove(self, idea_id):
-        self._edit(lambda items: items.__setitem__(slice(None), [m for m in items if m["id"] != idea_id]))
+        self._edit(lambda data: data["ideas"].__setitem__(slice(None), [m for m in data["ideas"] if m["id"] != idea_id]))
 
-    def _find(self, items, idea_id):
-        m = next((m for m in items if m["id"] == idea_id), None)
+    def _find(self, data, idea_id):
+        m = next((m for m in data["ideas"] if m["id"] == idea_id), None)
         if not m:
             raise ValueError(f"no idea {idea_id} on the board")
         return m
@@ -505,30 +512,58 @@ class Board:
     def status(self, idea_id, status):
         if status not in IDEA_STATES:
             raise ValueError(f"an idea's status is one of {', '.join(IDEA_STATES)}")
-        def change(items):
-            m = self._find(items, idea_id)
+
+        def change(data):
+            m = self._find(data, idea_id)
             m["status"] = status
             return m
 
         return self._edit(change)
 
-    def reply(self, idea_id, body):
-        def change(items):
-            m = self._find(items, idea_id)
-            r = {"id": next_id(m["replies"], "c"), "text": text(body), "at": now()}
+    def reply(self, idea_id, body, sender="claude"):
+        """A reply on an idea, Claude's or the user's (whose makes the idea unseen again)."""
+        body = text(body).strip()
+        if not body:
+            raise ValueError("a reply needs some words")
+
+        def change(data):
+            m = self._find(data, idea_id)
+            r = {"id": next_id(m["replies"], "c"), "from": sender, "text": body, "at": now()}
             m["replies"].append(r)
+            if sender != "claude":
+                m.pop("seen", None)
             return r
+
+        return self._edit(change)
+
+    def followup(self, round_slug, round_title, item_id, idea_id, idea_text, body):
+        """The user's answer, from the Ideas tab, on an idea that lives in a review."""
+        body = text(body).strip()
+        if not body:
+            raise ValueError("a reply needs some words")
+
+        def change(data):
+            f = {"id": next_id(data["followups"], "f"), "round": round_slug, "round_title": round_title, "item": item_id,
+                 "idea": idea_id, "idea_text": idea_text, "text": body, "at": now()}
+            data["followups"].append(f)
+            return f
 
         return self._edit(change)
 
     def unseen(self):
         return [m for m in self.all() if not m.get("seen")]
 
-    def mark_seen(self, ids):
-        def change(items):
-            for m in items:
+    def unseen_followups(self):
+        return [f for f in self._data()["followups"] if not f.get("seen")]
+
+    def mark_seen(self, ids, followups=()):
+        def change(data):
+            for m in data["ideas"]:
                 if m["id"] in ids:
                     m["seen"] = now()
+            for f in data["followups"]:
+                if f["id"] in followups:
+                    f["seen"] = now()
 
         self._edit(change)
 
@@ -540,7 +575,8 @@ def ideas(rounds, board=None):
     for m in sorted(board.all() if board else [], key=lambda m: m["at"], reverse=True):
         out.append({"round": "", "round_title": "", "item": "", "number": "", "item_text": "", "board": True,
                     "id": m["id"], "text": m["text"], "status": m.get("status", "new"), "at": m["at"],
-                    "seen": bool(m.get("seen")), "replies": [{"text": r["text"], "at": r["at"]} for r in m["replies"]]})
+                    "seen": bool(m.get("seen")),
+                    "replies": [{"id": r["id"], "from": r.get("from", "claude"), "text": r["text"], "at": r["at"]} for r in m["replies"]]})
     for slug in rounds.slugs():
         try:
             doc = rounds.doc(slug)
@@ -553,10 +589,14 @@ def ideas(rounds, board=None):
             for m in thread:
                 if m["kind"] != "idea" or not m["text"].strip():
                     continue
-                replies = [r for r in thread if r.get("to") == m["id"] and r["from"] == "claude"]
+                chain, replies = {m["id"]}, []        # the answers on it, and answers to those
+                for r in thread:
+                    if r.get("to") in chain and r["kind"] != "idea":
+                        chain.add(r["id"])
+                        replies.append({"id": r["id"], "from": r["from"], "text": r["text"], "at": r["at"]})
                 out.append({"round": slug, "round_title": doc["title"], "item": item_id, "number": number,
                             "item_text": md, "id": m["id"], "text": m["text"], "status": m.get("status", "new"),
-                            "at": m["at"], "replies": [{"text": r["text"], "at": r["at"]} for r in replies]})
+                            "at": m["at"], "replies": replies})
     return out
 
 

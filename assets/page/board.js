@@ -94,21 +94,55 @@ function renderIdeas() {
     said.textContent = i.text;
     card.append(top, said);
     for (const r of i.replies) {
-      const reply = el("div", "reply", `<span class="avatar">C</span>`);
+      const mine = r.from === "you";
+      const reply = el("div", `reply ${mine ? "you" : ""}`, mine ? `<span class="avatar you">${icon("reply")}</span>` : `<span class="avatar">C</span>`);
       reply.append(Object.assign(el("span"), { textContent: r.text }));
       card.append(reply);
     }
+    if (i.replies.some((r) => r.from !== "you")) card.append(ideaReplyBox(i));
     wrap.append(card);
   }
-  const typing = document.activeElement && document.activeElement.classList.contains("idea-text");
+  const key = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.key;
   main.replaceChildren(wrap);
-  if (typing) $(".idea-text", wrap).focus();
+  if (key) wrap.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+}
+
+/** Your answer to what Claude said about an idea; Claude reads it with the next hand-back. */
+function ideaReplyBox(i) {
+  const key = `${i.round}|${i.item}|${i.id}`;
+  S.ideaReplies = S.ideaReplies || {};
+  const row = el("div", "idea-reply");
+  const box = el("textarea");
+  box.rows = 1;
+  box.dataset.key = key;
+  box.placeholder = t("ideas.reply.ph");
+  box.value = S.ideaReplies[key] || "";
+  const send = async () => {
+    const text = (S.ideaReplies[key] || "").trim();
+    if (!text) { box.focus(); return; }
+    try {
+      await api("/api/idea/reply", { round: i.round, item: i.item, id: i.id, text, reply_id: newId() });
+      S.ideaReplies[key] = "";
+      await loadIdeas();
+      renderIdeas();
+      toast(t("ideas.reply.sent"));
+    } catch (e) {
+      toast(t("ask.failed", { e: e.message }));
+    }
+  };
+  box.oninput = () => (S.ideaReplies[key] = box.value);
+  box.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); }
+  };
+  row.append(box, button("quiet", `${icon("reply")}<span>${esc(t("ideas.reply"))}</span>`, send));
+  return row;
 }
 
 /** The box for a new idea: it belongs to no review, and Claude reads it with the next hand-back. */
 function ideaForm() {
   const form = el("div", "idea-add");
   const box = el("textarea", "idea-text");
+  box.dataset.key = "new-idea";
   box.rows = 2;
   box.placeholder = t("ideas.add.ph");
   box.value = S.ideaDraft || "";
