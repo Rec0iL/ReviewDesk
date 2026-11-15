@@ -399,7 +399,7 @@ def answers_md(slug, doc, state):
             a = state["items"][it["id"]]
             verdict = LABELS[a["verdict"]] + (f" ({a['severity']})" if a["severity"] else "")
             if a.get("extra") and not a["verdict"]:
-                verdict = "Anything else (handed back with an earlier round)"
+                verdict = "Anything else"
             label = it["number"] if it["id"] == it["number"] else f"{it['number']} {{#{it['id']}}}"
             out.append(f"- **{verdict}** · {label} · {it['md']}")
             if a["retest"]:

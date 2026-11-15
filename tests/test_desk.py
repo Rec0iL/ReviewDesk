@@ -328,7 +328,7 @@ class StoreTest(Temp):
         self.assertEqual(store.counts(state)["open"], before["open"])             # nothing to answer there
         self.assertEqual(store.counts(state)["total"], before["total"])
         md = store.answers_md("sample", doc, state)
-        self.assertIn("**Anything else (handed back with an earlier round)** · A1 {#else1} · A general impression.", md)
+        self.assertIn("**Anything else** · A1 {#else1} · A general impression.", md)
         self.assertIn("Is this normal?", md)
         self.rounds.message("sample", "else1", "comment", "More on this.", message_id="mc9")      # a thread like any item's
         self.rounds.set_item("sample", "else1", {"verdict": "works"})
