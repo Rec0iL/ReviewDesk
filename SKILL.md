@@ -49,6 +49,9 @@ the project around the current folder; `--project PATH` names another.
      particular question or idea; `<item>` is `overall` for the round's own thread);
    - send fixed items back: `review-desk retest <round> <item>… --note "what changed"`; their old
      answer moves into the item's history and they answer it again;
+   - what they wrote under "Anything else?" arrives as an item of its own (`A1 {#else1}`, in the
+     section "Anything else"): reply with `review-desk reply <round> else1 "…"`, `retest` works on
+     it too; the box on the page starts empty again after each hand-back;
    - the Ideas tab's own ideas (the user adds them there, they belong to no review) come after the
      answers, once each: answer with `review-desk reply board - "…" --to <idea id>` and
      `review-desk idea board - <idea id> planned|done|declined`; `review-desk ideas` lists them

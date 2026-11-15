@@ -55,6 +55,7 @@ class Desk:
         self.root = Path(root)
         self.folder = proj.ensure(self.root)
         self.rounds = Rounds(self.folder)
+        self.rounds.settle()
         self.events = Events(self.folder)
         self.questions = Questions(self.folder)
         self.board = Board(self.folder)

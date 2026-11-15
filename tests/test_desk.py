@@ -312,6 +312,46 @@ class StoreTest(Temp):
         second = self.rounds.doc("pic")["sections"][0]["blocks"][0]["html"]
         self.assertNotEqual(first, second)
 
+    def test_anything_else_becomes_an_item_at_hand_back(self):
+        self.rounds.set_overall("sample", "A general impression.")
+        self.rounds.add_file("sample", "overall", "shot.png", "screenshot")
+        self.rounds.message("sample", "overall", "question", "Is this normal?", message_id="mq9")
+        before = store.counts(self.rounds.state("sample"))
+        self.rounds.send("sample")
+        state = self.rounds.state("sample")
+        self.assertEqual((state["overall"]["note"], state["overall"]["files"], state["overall"]["messages"]), ("", [], []))
+        doc = self.rounds.doc("sample")
+        extra = [x for x in doc["sections"] if x.get("kind") == "else"][0]["blocks"][0]
+        self.assertEqual((extra["id"], extra["number"], extra["md"]), ("else1", "A1", "A general impression."))
+        a = state["items"]["else1"]
+        self.assertEqual((a["files"][0]["name"], a["messages"][0]["text"], a["extra"]), ("shot.png", "Is this normal?", True))
+        self.assertEqual(store.counts(state)["open"], before["open"])             # nothing to answer there
+        self.assertEqual(store.counts(state)["total"], before["total"])
+        md = store.answers_md("sample", doc, state)
+        self.assertIn("**Anything else (handed back with an earlier round)** · A1 {#else1} · A general impression.", md)
+        self.assertIn("Is this normal?", md)
+        self.rounds.message("sample", "else1", "comment", "More on this.", message_id="mc9")      # a thread like any item's
+        self.rounds.set_item("sample", "else1", {"verdict": "works"})
+        self.assertEqual(store.counts(self.rounds.state("sample"))["works"], before["works"] + 1)
+        # written again after the hand-back, then a re-test: that becomes the next item
+        self.rounds.set_overall("sample", "Another thought.")
+        self.rounds.retest("sample", ["open"], "Fixed.")
+        self.assertEqual(self.rounds.state("sample")["overall"]["note"], "")
+        self.assertEqual([e["id"] for e in self.rounds.state("sample")["extras"]], ["else1", "else2"])
+
+    def test_settle_moves_old_leftovers_into_items(self):
+        self.rounds.set_overall("sample", "Left in the box.")
+        path = self.rounds.path("sample", "state.json")
+        raw = json.loads(path.read_text())
+        raw.update(sent="2026-01-01 10:00", changed="2026-01-01 10:00")
+        path.write_text(json.dumps(raw))
+        self.rounds.settle()
+        state = self.rounds.state("sample")
+        self.assertEqual((state["overall"]["note"], state["items"]["else1"]["text"]), ("", "Left in the box."))
+        self.rounds.set_overall("sample", "Typed after the hand-back.")            # changed is later than sent: stays
+        self.rounds.settle()
+        self.assertEqual(self.rounds.state("sample")["overall"]["note"], "Typed after the hand-back.")
+
     def test_retest_keeps_history(self):
         self.rounds.set_item("sample", "open", {"verdict": "change", "severity": "annoying", "note": "slow"})
         self.rounds.send("sample")

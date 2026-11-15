@@ -3,6 +3,7 @@ answers in `state.json` (written only here), a readable `answers.md` rewritten o
 (what Claude reads), and `files/`. Plus `events.jsonl`, what happened, for `wait` and the
 session-start hook.
 """
+import html
 import json
 import re
 import threading
@@ -61,7 +62,15 @@ class Rounds:
         checklist = self.path(slug, "checklist.md")
         if not checklist.exists():
             raise ValueError(f"no round {slug!r}")
-        return markdown.parse(checklist.read_text(encoding="utf-8"), slug, files=markdown.Files(f"/files/{slug}", self.path(slug)))
+        doc = markdown.parse(checklist.read_text(encoding="utf-8"), slug, files=markdown.Files(f"/files/{slug}", self.path(slug)))
+        extras = (read_json(self.path(slug, "state.json"), {}) or {}).get("extras", [])
+        if extras:
+            # what you wrote under "Anything else?" when you handed back: items of their own now
+            doc["sections"].append({"id": "else", "kind": "else", "title": "Anything else", "html": "Anything else", "blocks": [
+                {"type": "item", "id": e["id"], "number": f"A{k}", "md": e["text"], "extra": True, "done": False,
+                 "html": html.escape(e["text"]).replace("\n", "<br>"), "fields": [], "children": []}
+                for k, e in enumerate(extras, 1)]})
+        return doc
 
     def state(self, slug, doc=None):
         """The round's answers, fitted to its checklist as it is now: answers follow their item
@@ -90,6 +99,7 @@ class Rounds:
             "round": saved.get("round", 1),
             "items": items,
             "overall": {"note": "", "files": [], "messages": [], **saved.get("overall", {})},
+            "extras": saved.get("extras", []),
             "sent": saved.get("sent"),
             "message": saved.get("message") or "",
             "changed": saved.get("changed"),
@@ -119,7 +129,7 @@ class Rounds:
             doc = self.doc(slug)
             state = self.state(slug, doc)
             result = change(doc, state)
-            self.save(slug, state, doc)
+            self.save(slug, state, self.doc(slug))      # the doc may have gained an item
             return result
 
     def set_item(self, slug, item_id, fields):
@@ -229,7 +239,26 @@ class Rounds:
     def send(self, slug, message=""):
         """The round handed back to Claude, with the words the user typed on the button (if any)."""
         message = text(message).strip()[:2000]
-        return self.edit(slug, lambda doc, state: state.update(sent=now(), message=message) or state["sent"])
+
+        def change(doc, state):
+            state.update(sent=now(), message=message)
+            archive_overall(state)
+            return state["sent"]
+
+        return self.edit(slug, change)
+
+    def settle(self):
+        """Rounds handed back before "Anything else?" turned into items: what is still in the box,
+        untouched since the hand-back, becomes an item now."""
+        for slug in self.slugs():
+            try:
+                def change(doc, state):
+                    if state["sent"] and state.get("changed") and state["changed"] <= state["sent"]:
+                        archive_overall(state)
+
+                self.edit(slug, change)
+            except (OSError, ValueError):
+                continue
 
     def retest(self, slug, item_ids, note="", notes=None):
         """Items back for another look: what they had goes into their history, a new round starts
@@ -243,6 +272,7 @@ class Rounds:
         def change(doc, state):
             for item_id in item_ids:
                 item(state, item_id)  # all of them exist, before anything changes
+            archive_overall(state) if state["sent"] else None
             state["round"] += 1
             for item_id in item_ids:
                 a = item(state, item_id)
@@ -264,11 +294,32 @@ def blank(it, saved=None):
     works, when the checklist already ticks it)."""
     a = {
         "text": it["md"], "verdict": "works" if it["done"] else "", "severity": "", "note": "",
-        "messages": [], "files": [], "retest": None, "history": [],
+        "messages": [], "files": [], "retest": None, "history": [], "extra": bool(it.get("extra")),
     }
     if saved:
         a.update({k: saved[k] for k in a if k in saved and k != "text"})
     return a
+
+
+def archive_overall(state):
+    """What you wrote under "Anything else?" (note, files, questions, ideas) moves into an item of
+    its own, so it can be answered and talked about like the others; the box starts empty."""
+    o = state["overall"]
+    if not (o["note"].strip() or o["files"] or o["messages"]):
+        return
+    extras = state.setdefault("extras", [])
+    used = {e["id"] for e in extras}
+    n = len(extras) + 1
+    while f"else{n}" in used:
+        n += 1
+    entry = {"id": f"else{n}", "round": state["round"], "at": now(),
+             "text": o["note"].strip() or "(files and messages only)"}
+    extras.append(entry)
+    state["items"][entry["id"]] = {
+        "text": entry["text"], "verdict": "", "severity": "", "note": "", "messages": o["messages"],
+        "files": o["files"], "retest": None, "history": [], "extra": True,
+    }
+    state["overall"] = {**o, "note": "", "files": [], "messages": []}
 
 
 def item(state, item_id):
@@ -297,12 +348,14 @@ def text(value):
 
 
 def counts(state):
-    c = {v: 0 for v in VERDICTS} | {"open": 0, "retest": 0, "broken": 0}
+    c = {v: 0 for v in VERDICTS} | {"open": 0, "retest": 0, "broken": 0, "total": 0}
     for a in state["items"].values():
+        if a.get("extra") and not a["verdict"]:
+            continue      # a note you handed back under "Anything else": nothing to answer
         c[a["verdict"] or "open"] += 1
         c["retest"] += bool(a["retest"] and not a["verdict"])
         c["broken"] += a["severity"] == "broken"
-    c["total"] = len(state["items"])
+        c["total"] += 1
     return c
 
 
@@ -345,6 +398,8 @@ def answers_md(slug, doc, state):
         for it in listed:
             a = state["items"][it["id"]]
             verdict = LABELS[a["verdict"]] + (f" ({a['severity']})" if a["severity"] else "")
+            if a.get("extra") and not a["verdict"]:
+                verdict = "Anything else (handed back with an earlier round)"
             label = it["number"] if it["id"] == it["number"] else f"{it['number']} {{#{it['id']}}}"
             out.append(f"- **{verdict}** · {label} · {it['md']}")
             if a["retest"]:

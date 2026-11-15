@@ -513,7 +513,7 @@ window.addEventListener("beforeunload", (e) => {
 
 /** Before a hand-back with items still open: say which, and offer to go to them first. */
 function confirmOpen() {
-  const open = allItems(S.round.doc).filter((it) => !(S.round.state.items[it.id] || {}).verdict);
+  const open = allItems(S.round.doc).filter((it) => !it.extra && !(S.round.state.items[it.id] || {}).verdict);
   if (!open.length) return Promise.resolve(true);
   return new Promise((resolve) => {
     const d = dialog("confirm");
@@ -824,6 +824,7 @@ function renderConn() {
 function counts() {
   const c = { works: 0, partly: 0, change: 0, blocked: 0, skipped: 0, open: 0, retest: 0, broken: 0, total: 0 };
   for (const a of Object.values(S.round.state.items)) {
+    if (a.extra && !a.verdict) continue; // a note handed back under "Anything else": nothing to answer
     c[a.verdict || "open"] += 1;
     c.retest += Boolean(a.retest && !a.verdict);
     c.broken += a.severity === "broken";
@@ -944,7 +945,8 @@ function jumpTo(v) {
 
 /** The round's items with this answer ("open": none yet), in their order on the page. */
 function idsOf(v) {
-  return allItems(S.round.doc).map((it) => it.id).filter((id) => (S.round.state.items[id]?.verdict || "open") === v);
+  return allItems(S.round.doc).filter((it) => !it.extra || S.round.state.items[it.id]?.verdict)
+    .map((it) => it.id).filter((id) => (S.round.state.items[id]?.verdict || "open") === v);
 }
 
 function refreshHead() {
@@ -1201,7 +1203,8 @@ function refreshCard(box, b) {
 
 function updateSectionCounts() {
   for (const part of document.querySelectorAll("section.part")) {
-    const ids = [...part.querySelectorAll(".item")].map((c) => c.dataset.id);
+    const ids = [...part.querySelectorAll(".item")].map((c) => c.dataset.id)
+      .filter((id) => !(S.round.state.items[id] || {}).extra || S.round.state.items[id].verdict); // handed-back notes: nothing to answer
     const done = ids.filter((id) => S.round.state.items[id] && S.round.state.items[id].verdict).length;
     const box = $("h2 .count", part);
     if (box) box.textContent = ids.length ? t("of", { a: done, b: ids.length }) : "";
@@ -1243,7 +1246,7 @@ function renderMain({ keepPlace = false } = {}) {
       continue;
     }
     const part = el("section", "part");
-    const h = el("h2", null, `<span>${s.html}</span>`);
+    const h = el("h2", null, `<span>${s.kind === "else" ? esc(t("overall.title")) : s.html}</span>`);
     h.append(el("span", "count"));
     part.append(h);
     blocks(s.blocks, part);
