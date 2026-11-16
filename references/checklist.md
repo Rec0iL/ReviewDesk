@@ -41,6 +41,8 @@ Use the projector (DP-3) and headphones.
 - **Header** (optional), between `---` lines at the very top:
   - `title:` overrides the title from the `#` line;
   - `about:` the time it takes;
+  - `owner: NAME` sends its hand-backs to the session listening as NAME (`wait --as NAME`), for
+    several sessions on one desk; see "Several sessions, one desk" in `SKILL.md`;
   - `kind: plan` makes it a plan to comment on (verdicts read Agree / Change it / Unclear, "Send
     comments", no severity). Each step is an item; see "Plans on the desk" in `SKILL.md`;
   - `commit:` a commit hash the page can show with its diff;

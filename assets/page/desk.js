@@ -277,7 +277,7 @@ async function onEvent(event) {
     return refreshPhone();
   }
   if (event.type === "listening") {
-    if (S.state) S.state.listening = event.on;
+    if (S.state) Object.assign(S.state, { listening: event.on, listeners: event.listeners || S.state.listeners });
     refreshHead();
     return;
   }
@@ -837,7 +837,11 @@ function renderHead(head) {
   const { doc, state } = S.round;
   const c = counts();
   const entry = summary() || {};
-  const listening = Boolean(S.state && S.state.listening);
+  // A round with `owner: NAME` goes to the session listening as NAME, so "listening" is per round.
+  const owner = (doc.meta && doc.meta.owner) || "";
+  const listeners = S.state && S.state.listeners;
+  const many = listeners ? listeners[owner] || 0 : 0;
+  const listening = listeners ? many > 0 : Boolean(S.state && S.state.listening);
   const meta = [];
   if (doc.about) meta.push(esc(t("about", { t: aboutText(doc.about) })));
   if (state.round > 1) meta.push(esc(t("round", { n: state.round })));
@@ -870,7 +874,7 @@ function renderHead(head) {
             <button type="button" class="hand-more" tabindex="-1">${icon("message")}</button>
             <button type="button" class="primary hand">${icon("send")}<span></span></button>
           </div>
-          <span class="listening ${listening ? "on" : ""}" title="${esc(listening ? t("listening.tip") : t("not.listening.tip"))}">${esc(listening ? t("listening") : t("not.listening"))}</span>
+          <span class="listening ${listening ? "on" : ""}" title="${esc(listening ? t("listening.tip") : t("not.listening.tip"))}">${esc(many > 1 ? t("listening.many", { n: many }) : listening ? t("listening") : t("not.listening"))}</span>
         </div>
       </div>
     </div>

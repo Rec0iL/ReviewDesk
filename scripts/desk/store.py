@@ -322,6 +322,17 @@ def archive_overall(state):
     state["overall"] = {**o, "note": "", "files": [], "messages": []}
 
 
+OWNER = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def owner_name(value):
+    """A listener's name (letters, digits, `.`, `_`, `-`), or "" for none."""
+    value = str(value or "").strip()
+    if value and not OWNER.match(value):
+        raise ValueError("an owner is a short name: letters, digits, . _ -")
+    return value
+
+
 def item(state, item_id):
     if item_id not in state["items"]:
         raise ValueError(f"no item {item_id!r} in this round")
@@ -452,6 +463,7 @@ class Questions:
         with LOCK:
             sets = self.all()
             asked["id"] = next_id(sets, "q")
+            asked["owner"] = owner_name(data.get("owner", ""))
             asked["asked"] = now()
             asked["answered"] = None
             sets.append(asked)
@@ -731,13 +743,33 @@ class Events:
             self.changed.notify_all()
             return event
 
-    def handled(self):
-        return (read_json(self.marker, {}) or {}).get("handled", 0)
+    # Each listener has an owner: "" for the plain case (one session, rounds with no `owner:`),
+    # otherwise the name a session listens as (`wait --as NAME`). A hand-back or an answer goes
+    # only to its owner's listener; the others never consume it.
 
-    def mark(self, seq):
-        write_json(self.marker, {"handled": max(seq, self.handled())})
+    def marks(self):
+        return read_json(self.marker, {}) or {}
 
-    def waiting(self, kinds=("send", "answer")):
-        """What Claude hasn't taken in yet: hand-backs and answered questions after its marker."""
-        after = self.handled()
-        return [e for e in self.all() if e["seq"] > after and e["type"] in kinds]
+    def handled(self, owner=""):
+        marks = self.marks()
+        return marks.get("owners", {}).get(owner, 0) if owner else marks.get("handled", 0)
+
+    def mark(self, seq, owner=""):
+        marks = self.marks()
+        if owner:
+            owners = marks.setdefault("owners", {})
+            owners[owner] = max(seq, owners.get(owner, 0))
+        else:
+            marks["handled"] = max(seq, marks.get("handled", 0))
+        write_json(self.marker, marks)
+
+    def waiting(self, kinds=("send", "answer"), owner=""):
+        """What this owner's listener hasn't taken in yet: hand-backs and answered questions."""
+        after = self.handled(owner)
+        return [e for e in self.all() if e["seq"] > after and e["type"] in kinds and e.get("owner", "") == owner]
+
+    def waiting_any(self, kinds=("send", "answer")):
+        """What any listener hasn't taken in yet, each against its own owner's mark."""
+        marks = self.marks()
+        mark = lambda o: marks.get("owners", {}).get(o, 0) if o else marks.get("handled", 0)
+        return [e for e in self.all() if e["type"] in kinds and e["seq"] > mark(e.get("owner", ""))]

@@ -29,10 +29,36 @@ def git(root, *args):
 
 def find_root(start=None):
     """The project a command means: the git repository around `start` (the current folder by
-    default), or that folder itself outside one."""
+    default), or that folder itself outside one. From a linked git worktree with no `start`
+    given, the main checkout: sessions working in worktrees share its desk."""
+    explicit = start is not None
     start = Path(start or os.getcwd()).resolve()
     top = git(start, "rev-parse", "--show-toplevel")
-    return Path(top).resolve() if top else start
+    if not top:
+        return start
+    top = Path(top).resolve()
+    return (None if explicit else main_checkout(top)) or top
+
+
+def main_checkout(top):
+    """For a linked git worktree: the main checkout it belongs to (None for anything else)."""
+    common, gitdir = git(top, "rev-parse", "--git-common-dir"), git(top, "rev-parse", "--git-dir")
+    if not common or not gitdir:
+        return None
+    absolute = lambda p: (Path(p) if Path(p).is_absolute() else Path(top) / p).resolve()
+    common, gitdir = absolute(common), absolute(gitdir)
+    if common == gitdir or common.name != ".git":
+        return None
+    return common.parent
+
+
+def default_owner(start=None):
+    """Who a session listens as when it doesn't say (`--as`): $REVIEW_DESK_AS, or, in a linked
+    git worktree, the worktree's folder name; "" (no owner, the plain case) otherwise."""
+    if os.environ.get("REVIEW_DESK_AS"):
+        return os.environ["REVIEW_DESK_AS"].strip()
+    top = git(Path(start or os.getcwd()).resolve(), "rev-parse", "--show-toplevel")
+    return Path(top).name if top and main_checkout(Path(top).resolve()) else ""
 
 
 def review_dir(root):

@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import attach, markdown, phone, qr
 from . import project as proj
 from .runs import Runs
-from .store import LOCK, Board, Events, Questions, Rounds, ideas, messages
+from .store import LOCK, Board, Events, Questions, Rounds, ideas, messages, owner_name
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent.parent / "assets"
@@ -64,8 +64,8 @@ class Desk:
         self.clients_lock = threading.Lock()
         self.presence = {}
         self.pages = {}            # each open page: is it visible, may it show notifications
-        self.waits = 0             # `wait` requests running now
-        self.last_wait = 0.0
+        self.waits = {}            # `wait` requests running now, by owner ("" = no owner)
+        self.last_wait = {}        # when each owner's last `wait` request ended
         self.url = ""
         self.port = 0
         self.phone = None          # the phone's listener while it is on
@@ -147,9 +147,24 @@ class Desk:
         return {"on": True, "url": p["url"], "ip": p["ip"], "port": p["port"], "qr": qr.svg(p["url"]),
                 "until": time.strftime("%H:%M", time.localtime(p["until"])), "firewall": p["firewall"]}
 
-    def listening(self):
-        """Is Claude waiting for a hand-back (a `wait` running, or one a moment ago)?"""
-        return self.waits > 0 or time.time() - self.last_wait < LISTENING
+    def listeners(self):
+        """Who is listening (a `wait` running, or one a moment ago), by owner, with how many
+        `wait`s each has running now (more than one: only one of them gets the next hand-back)."""
+        now_ = time.time()
+        owners = {o for o, n in self.waits.items() if n > 0} | {o for o, t in self.last_wait.items() if now_ - t < LISTENING}
+        return {o: max(self.waits.get(o, 0), 1) for o in sorted(owners)}
+
+    def listening(self, owner=None):
+        """Is Claude waiting for a hand-back: anyone (owner None), or that owner's listener?"""
+        who = self.listeners()
+        return bool(who) if owner is None else owner in who
+
+    def owner_of(self, slug):
+        """Whose listener a round's hand-backs go to (its checklist's `owner:`; "" for none)."""
+        try:
+            return owner_name(self.rounds.doc(slug)["meta"].get("owner", ""))
+        except (OSError, ValueError):
+            return ""
 
     def claude_did(self, slug, what, item=None, title="", body="", kind="round"):
         """Tells the pages what Claude just did, with a notification they show (chime, toast, or
@@ -192,11 +207,11 @@ class Desk:
 
     def watch(self, stop):
         before = self.snapshot()
-        listening = self.listening()
+        listening = self.listeners()
         while not stop.wait(1.0):
-            if self.listening() != listening:
-                listening = self.listening()
-                self.broadcast(type="listening", on=listening)
+            if self.listeners() != listening:
+                listening = self.listeners()
+                self.broadcast(type="listening", on=bool(listening), listeners=listening)
             after = self.snapshot()
             if after == before:
                 continue
@@ -221,42 +236,44 @@ class Desk:
     # -- what the API answers ----------------------------------------------------------------
 
     def state(self):
-        handled = self.events.handled()
-        last_send = {e.get("round"): e["seq"] for e in self.events.all() if e["type"] == "send"}
+        last_send = {e.get("round"): e for e in self.events.all() if e["type"] == "send"}
         rounds = []
         for slug in self.rounds.slugs():
             try:
                 summary = self.rounds.summary(slug)
-                summary["read"] = slug in last_send and handled >= last_send[slug]
+                summary["owner"] = self.owner_of(slug)
+                e = last_send.get(slug)
+                summary["read"] = bool(e) and self.events.handled(e.get("owner", "")) >= e["seq"]
                 rounds.append(summary)
             except (OSError, ValueError) as e:
                 rounds.append({"slug": slug, "title": slug, "error": str(e)})
         return {"project": proj.settings(self.root) | {"path": str(self.root)}, "rounds": rounds,
-                "listening": self.listening(), "version": asset_version()}
+                "listening": self.listening(), "listeners": self.listeners(), "version": asset_version()}
 
     def last_sends(self):
         """When each round was last handed back."""
         return {e["round"]: e["at"] for e in self.events.all() if e["type"] == "send" and e.get("round")}
 
-    def wait(self, timeout):
-        """What Claude hasn't had yet (hand-backs, answers), as soon as there is some; marked as
-        had when it goes out, so it goes out once."""
-        self.waits += 1
+    def wait(self, timeout, owner=""):
+        """What this owner's listener hasn't had yet (hand-backs, answers), as soon as there is
+        some; marked as had when it goes out, so it goes out once, and only to its owner."""
+        owner = owner_name(owner)
+        self.waits[owner] = self.waits.get(owner, 0) + 1
         try:
             deadline = time.time() + timeout
             with self.events.changed:
                 while True:
-                    waiting = self.events.waiting()
+                    waiting = self.events.waiting(owner=owner)
                     if waiting:
-                        self.events.mark(max(e["seq"] for e in waiting))
+                        self.events.mark(max(e["seq"] for e in waiting), owner)
                         break
                     left = deadline - time.time()
                     if left <= 0:
                         break
                     self.events.changed.wait(left)
         finally:
-            self.waits -= 1
-            self.last_wait = time.time()
+            self.waits[owner] -= 1
+            self.last_wait[owner] = time.time()
         if waiting:
             self.broadcast(type="handled", rounds=sorted({e.get("round") for e in waiting if e.get("round")}))
         return waiting
@@ -390,7 +407,7 @@ def handler_for(desk, server_ref, on_phone=False):
                     return self.send_json(200, attach.commit(desk.root, query.get("ref", [""])[0]))
                 if path == "/api/wait":
                     timeout = min(max(float(query.get("timeout", [WAIT])[0]), 0), 120)
-                    return self.send_json(200, {"events": desk.wait(timeout)})
+                    return self.send_json(200, {"events": desk.wait(timeout, query.get("as", [""])[0])})
             except (OSError, ValueError) as e:
                 return self.fail(400, str(e))
             self.reply(404, "nothing here", "text/plain")
@@ -600,13 +617,15 @@ def handler_for(desk, server_ref, on_phone=False):
             if path == "/api/send":
                 message = str(data.get("message") or "")
                 sent = rounds.send(slug, message)
-                desk.events.add("send", round=slug, message=rounds.state(slug)["message"])
+                owner = desk.owner_of(slug)
+                desk.events.add("send", round=slug, owner=owner, message=rounds.state(slug)["message"])
                 desk.broadcast(type="round", slug=slug, by="you", client=data.get("client"))
                 desk.broadcast(type="rounds")
-                return {"sent": sent, "listening": desk.listening()}
+                return {"sent": sent, "listening": desk.listening(owner)}
             if path == "/api/answer":
                 answered = desk.questions.answer(data["id"], data["answers"])
-                desk.events.add("answer", question=answered["id"], title=answered["title"], answers=answered["answers"])
+                desk.events.add("answer", question=answered["id"], title=answered["title"], answers=answered["answers"],
+                                owner=answered.get("owner", ""))
                 desk.broadcast(type="questions", client=data.get("client"))
                 return {"question": answered}
             if path == "/api/presence":

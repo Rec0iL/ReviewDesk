@@ -64,3 +64,16 @@ review-desk ideas --all                        # every one
 review-desk reply board - "On the list for M7." --to b1
 review-desk idea board - b1 planned            # new | planned | done | declined
 ```
+
+## Several sessions on one desk
+
+```bash
+review-desk status --as fix-login         # which name you listen as, who else listens
+review-desk wait --as fix-login           # only rounds with `owner: fix-login` (run in the background)
+review-desk ask --as fix-login q.json     # its answers come to fix-login's wait
+REVIEW_DESK_AS=fix-login review-desk wait # the same, through the environment
+```
+
+In a linked git worktree the name defaults to the worktree's folder name, and the commands use the
+main checkout's desk without `--project`. A round with no `owner:` goes to the listener with no
+name. Hand-backs nobody listens for stay queued until their owner's `wait` comes.

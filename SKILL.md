@@ -68,6 +68,26 @@ When a session starts with "Review Desk has an update", tell the user in one lin
 run `review-desk update` only after they agree (it pulls the new version, fast-forward only). A
 running desk keeps the old version until `review-desk stop` and `start`.
 
+## Several sessions, one desk
+
+Sessions you start (in a git worktree or not) share the project's one desk, so the user has one
+page. Each session listens only for its own rounds:
+
+- **Your name.** In a linked git worktree, the commands work on the main checkout's desk by
+  themselves and you listen as the worktree's folder name. Anywhere else, give a name with
+  `--as NAME` (or `REVIEW_DESK_AS=NAME`). `review-desk status` says which name you listen as.
+- **Your rounds.** Put `owner: NAME` in the header of every round you write. A round without
+  `owner:` belongs to the session with no name (the main one, the plain case).
+- **Listening.** `review-desk wait --as NAME` (in a worktree plain `review-desk wait` is enough)
+  returns only hand-backs of your rounds and answers to questions you asked with
+  `review-desk ask --as NAME`. Hand-backs of other rounds stay queued for their own session; no
+  listener takes another's. The Ideas tab goes to the session with no name.
+- **One `wait` per session.** Two at once with the same name: only one gets the next hand-back.
+  `review-desk status` and the page say so.
+- `reply`, `retest`, `idea`, `answers` need no name: they name the round.
+
+One session alone needs none of this: no `owner:`, no `--as`, as before.
+
 ## Asking questions
 
 `review-desk status` shows how many pages are open. While at least one is, ask planning questions

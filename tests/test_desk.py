@@ -138,6 +138,22 @@ class ParserTest(unittest.TestCase):
 # -- the project's folder ------------------------------------------------------------------------
 
 class ProjectTest(Temp):
+    def test_a_worktree_shares_the_main_checkouts_desk(self):
+        main = git_repo(self.root / "main")
+        run = lambda *a: subprocess.run(["git", "-C", str(main), *a], check=True, capture_output=True)
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start")
+        run("worktree", "add", "-q", str(self.root / "side-task"))
+        here = os.getcwd()
+        try:
+            os.chdir(self.root / "side-task")
+            self.assertEqual(project.find_root(), main.resolve())                  # the main checkout's desk
+            self.assertEqual(project.default_owner(), "side-task")                 # listening as itself
+            self.assertEqual(project.find_root(self.root / "side-task"), (self.root / "side-task").resolve())  # said so: its own
+            os.chdir(main)
+            self.assertEqual((project.find_root(), project.default_owner()), (main.resolve(), ""))
+        finally:
+            os.chdir(here)
+
     def test_exclude_once(self):
         git_repo(self.root)
         project.ensure(self.root)
@@ -593,7 +609,7 @@ class ServerTest(ServerBase):
         thread = threading.Thread(target=waiter)
         thread.start()
         deadline = time.time() + 5
-        while self.desk.waits == 0 and time.time() < deadline:
+        while not self.desk.waits.get("") and time.time() < deadline:
             time.sleep(0.05)
         self.assertTrue(self.desk.listening())
         self.assertTrue(self.request("GET", "/api/state")[1]["listening"])
@@ -808,6 +824,11 @@ class ServerTest(ServerBase):
         self.assertEqual([(e["type"], e["question"], e["answers"][0]["chosen"]) for e in got], [("answer", "q1", ["Once"])])
         ideas = self.request("GET", "/api/ideas")[1]["ideas"]
         self.assertEqual(ideas, [])
+        # asked by a session listening as "side": its answers go to that session only
+        self.request("POST", "/api/claude", {"action": "ask", "owner": "side", "questions": [{"question": "Which?", "options": ["A", "B"]}]})
+        self.request("POST", "/api/answer", {"id": "q2", "answers": [{"chosen": ["A"]}]})
+        self.assertEqual(self.request("GET", "/api/wait?timeout=0.3")[1]["events"], [])
+        self.assertEqual([e["question"] for e in self.request("GET", "/api/wait?timeout=0.3&as=side")[1]["events"]], ["q2"])
 
     def test_watcher_sees_claude(self):
         stop = threading.Event()
@@ -1081,6 +1102,41 @@ class CommandTest(Temp):
             self.assertEqual((shown["status"], shown["replies"][0]["text"], shown["seen"]), ("planned", "On the list.", True))
         finally:
             waiter.kill()
+            self.run_desk("stop")
+
+    def test_a_hand_back_goes_only_to_the_rounds_owner(self):
+        write_round(self.root, "round-a", SAMPLE.replace("commit: abc1234", "commit: abc1234\nowner: a"))
+        write_round(self.root, "round-b", SAMPLE.replace("commit: abc1234", "commit: abc1234\nowner: b"))
+        self.run_desk("start", "--no-open")
+        waiter = lambda *a: subprocess.Popen([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "--project", str(self.root),
+                                             "wait", *a], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                            env={**os.environ, "REVIEW_DESK_AS": ""})
+        a, b, plain = waiter("--as", "a", "--timeout", "6"), waiter("--as", "b", "--timeout", "20"), waiter("--timeout", "6")
+        try:
+            from desk.cli import call
+            rt = project.runtime(self.root)
+            deadline = time.time() + 10
+            while time.time() < deadline and len(call(rt, "GET", "/api/state")["listeners"]) < 3:
+                time.sleep(0.2)
+            self.assertEqual(sorted(call(rt, "GET", "/api/state")["listeners"]), ["", "a", "b"])
+            call(rt, "POST", "/api/send", {"round": "round-b"})
+            out_b, _ = b.communicate(timeout=15)
+            self.assertIn("Handed back at", out_b)
+            self.assertIn("round-b", out_b)
+            self.assertIn("review-desk wait --as b", out_b)
+            out_a, _ = a.communicate(timeout=15)
+            out_plain, _ = plain.communicate(timeout=15)
+            self.assertNotIn("Handed back", out_a)                 # A's keeps waiting (until its timeout)
+            self.assertNotIn("Handed back", out_plain)             # and the plain listener never takes it
+            # nobody listens as a: A's hand-back stays queued for A, untouched by the others
+            call(rt, "POST", "/api/send", {"round": "round-a"})
+            self.assertEqual(call(rt, "GET", "/api/wait?timeout=0.3")["events"], [])
+            self.assertEqual(call(rt, "GET", "/api/wait?timeout=0.3&as=b")["events"], [])
+            got = call(rt, "GET", "/api/wait?timeout=0.3&as=a")["events"]
+            self.assertEqual([(e["round"], e["owner"]) for e in got], [("round-a", "a")])
+        finally:
+            for w in (a, b, plain):
+                w.kill()
             self.run_desk("stop")
 
     def listening(self):

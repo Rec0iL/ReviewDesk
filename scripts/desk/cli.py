@@ -5,8 +5,12 @@ folder (the git repository, or the folder itself), or the one `--project` names.
     stop | open            stop it | show it in the browser
     status [--hook]        rounds, answers waiting, where you are (--hook: one line, only when
                            answers wait, for a session-start hook)
-    wait [--timeout S]     returns when you hand a round back (run it in the background); prints
-                           the answers
+    wait [--timeout S] [--as NAME]
+                           returns when you hand a round back (run it in the background); prints
+                           the answers. With several sessions on one desk, each listens as its
+                           own NAME and gets only the rounds whose header says `owner: NAME`
+                           (default: $REVIEW_DESK_AS, or the worktree's folder name in a git
+                           worktree, or no owner)
     answers ROUND          a round's answers as they are now
     reply ROUND ITEM TEXT [--to MESSAGE]
                            Claude's reply in an item's thread (ITEM `overall` for the round's own)
@@ -19,7 +23,8 @@ folder (the git repository, or the folder itself), or the one `--project` names.
     ideas [--all]          the Ideas tab's own ideas (they belong to no review) you haven't been
                            shown yet; `wait` prints them too. Answer them with
                            `reply board - TEXT --to ID` and `idea board - ID STATUS`
-    ask [FILE|-] [--wait]  question cards on the page (JSON like the chat's question tool:
+    ask [FILE|-] [--wait] [--as NAME]
+                           question cards on the page (JSON like the chat's question tool:
                            {"title", "questions": [{"question", "header", "multiSelect",
                            "options": [{"label", "description"}]}]}); the answers come
                            through `wait` (or right away with --wait)
@@ -38,7 +43,9 @@ import webbrowser
 from pathlib import Path
 
 from . import project as proj
-from .store import Board, Events, Rounds
+from urllib.parse import quote
+
+from .store import Board, Events, Rounds, owner_name
 
 SCRIPT = Path(__file__).resolve().parent.parent / "review_desk.py"
 
@@ -117,7 +124,7 @@ def stop(root):
     print("stopped")
 
 
-def status(root, hook=False):
+def status(root, hook=False, owner=""):
     from .updates import notice
     newer = notice()
     folder = proj.review_dir(root)
@@ -131,8 +138,8 @@ def status(root, hook=False):
                 print(newer)
         return
     events = Events(folder)
-    waiting = events.waiting()
-    fresh = len(Board(folder).unseen()) + len(Board(folder).unseen_followups())
+    waiting = events.waiting(owner=owner)
+    fresh = 0 if owner else len(Board(folder).unseen()) + len(Board(folder).unseen_followups())
     if hook:
         # One line for a new session, only when something waits.
         if fresh and not waiting:
@@ -140,7 +147,7 @@ def status(root, hook=False):
         if waiting:
             what = ", ".join(sorted({e.get("round") or e.get("question", "?") for e in waiting}))
             print(f"Review Desk: answers waiting in {root.name} ({what}). "
-                  f"Run `review-desk wait` (it returns at once) and read them."
+                  f"Run `review-desk wait{' --as ' + owner if owner else ''}` (it returns at once) and read them."
                   + (f" {fresh} new idea(s) on the Ideas tab come with it." if fresh else ""))
         if newer:
             print(newer)
@@ -156,24 +163,32 @@ def status(root, hook=False):
             continue
         c = s["counts"]
         sent = f"handed back {s['sent']}" if s["sent"] else "not handed back"
-        print(f"  {slug}: {s['title']} · round {s['round']} · {sent} · {c['works']} work, {c['partly']} partly, "
+        mine = rounds.doc(slug)["meta"].get("owner", "")
+        print(f"  {slug}: {s['title']}{' · owner ' + mine if mine else ''} · round {s['round']} · {sent} · {c['works']} work, {c['partly']} partly, "
               f"{c['change']} need a change, {c['blocked']} can't test, {c['skipped']} skipped, {c['open']} open")
+    print(f"  this session listens as {owner!r} (`wait --as {owner}`; rounds with `owner: {owner}` in their header)"
+          if owner else "  this session listens for rounds with no `owner:` (the plain case)")
     if rt:
         try:
-            presence = call(rt, "GET", "/api/state").get("presence")
+            got = call(rt, "GET", "/api/state")
         except (OSError, RuntimeError, ValueError):
-            presence = None
+            got = {}
+        presence = got.get("presence")
+        for who, n in (got.get("listeners") or {}).items():
+            name = who or "(no owner)"
+            print(f"  listening: {name}" + (f" — {n} `wait`s at once: only one of them gets the next hand-back" if n > 1 else ""))
         if presence:
             print(f"  you are on {presence.get('round')} · {presence.get('item') or 'the round'} (since {presence.get('at')})")
     if fresh:
         print(f"  {fresh} new idea(s) on the Ideas tab, not read yet (`review-desk ideas`)")
-    for e in waiting:
-        print(f"  waiting for Claude: {e['type']} {e.get('round') or e.get('question', '')} at {e['at']}")
+    for e in events.waiting_any():
+        who = f" (for {e['owner']})" if e.get("owner") else ""
+        print(f"  waiting for Claude{who}: {e['type']} {e.get('round') or e.get('question', '')} at {e['at']}")
     if newer:
         print(newer)
 
 
-def show_events(root, events):
+def show_events(root, events, owner=""):
     """What `wait` prints: each hand-back with its answers, each answered question."""
     folder = proj.review_dir(root)
     rounds = Rounds(folder)
@@ -201,8 +216,10 @@ def show_events(root, events):
                 if a.get("note", "").strip():
                     print(f"  note: {a['note'].strip()}")
             print()
-    print(board_text(Board(folder), mark=True), end="")
-    print("Run `review-desk wait` again in the background to hear the next hand-back.")
+    if not owner:   # the Ideas tab belongs to no session in particular: the main one gets it
+        print(board_text(Board(folder), mark=True), end="")
+    again = f"review-desk wait --as {owner}" if owner else "review-desk wait"
+    print(f"Run `{again}` again in the background to hear the next hand-back.")
 
 
 def board_text(board, mark=False, every=False):
@@ -235,15 +252,16 @@ def answers_text(rounds, slug):
     return answers_md(slug, doc, rounds.state(slug, doc))
 
 
-def wait(root, timeout=None):
-    """Waits for a hand-back. The desk starts if it isn't running (without opening a page)."""
+def wait(root, timeout=None, owner=""):
+    """Waits for a hand-back of this owner's rounds (`owner:` in their header; "" for rounds with
+    none). The desk starts if it isn't running (without opening a page)."""
     rt = start(root, open_browser=False, quiet=True)
     deadline = None if timeout is None else time.time() + timeout
     misses = 0
     while deadline is None or time.time() < deadline:
         step = 25 if deadline is None else max(0.0, min(25, deadline - time.time()))
         try:
-            events = call(rt, "GET", f"/api/wait?timeout={step:.1f}", timeout=step + 15)["events"]
+            events = call(rt, "GET", f"/api/wait?timeout={step:.1f}&as={quote(owner)}", timeout=step + 15)["events"]
             misses = 0
         except (OSError, RuntimeError, ValueError):
             # The desk went away: maybe restarted on purpose. Look a little longer, then stop.
@@ -255,7 +273,7 @@ def wait(root, timeout=None):
             rt = running(root) or rt
             continue
         if events:
-            show_events(root, events)
+            show_events(root, events, owner)
             return
     print("Nothing handed back yet. Run `review-desk wait` again to keep listening.")
 
@@ -271,7 +289,7 @@ def claude(root, body):
     return claude_action(Rounds(folder), body, Board(folder))[0]
 
 
-def ask(root, source, then_wait=False):
+def ask(root, source, then_wait=False, owner=""):
     """Question cards on the page. The desk starts if needed (a desktop notification brings you
     there when no page is open)."""
     raw = sys.stdin.read() if source in (None, "-") else Path(source).read_text(encoding="utf-8")
@@ -281,7 +299,7 @@ def ask(root, source, then_wait=False):
         sys.exit(f"review-desk ask: that isn't JSON ({e})")
     rt = start(root, open_browser=False, quiet=True)
     try:
-        out = call(rt, "POST", "/api/claude", {**data, "action": "ask"})
+        out = call(rt, "POST", "/api/claude", {**data, "action": "ask", "owner": owner})
     except RuntimeError as e:
         sys.exit(f"review-desk ask: {e}")
     q = out["question"]
@@ -289,7 +307,7 @@ def ask(root, source, then_wait=False):
     if not out.get("pages"):
         print("No page is open, so a desktop notification asks them to look. If they don't, ask in the chat.")
     if then_wait:
-        wait(root)
+        wait(root, owner=owner)
     else:
         print("The answers come through `review-desk wait`.")
 
@@ -366,7 +384,9 @@ def main(argv=None):
     sub.add_parser("open", parents=[common])
     p = sub.add_parser("status", parents=[common])
     p.add_argument("--hook", action="store_true")
+    p.add_argument("--as", dest="owner", help="the session's name (default: see `wait`)")
     p = sub.add_parser("wait", parents=[common])
+    p.add_argument("--as", dest="owner", help="listen for the rounds with `owner: NAME` (default: see above)")
     p.add_argument("--timeout", type=float, help="give up after this many seconds (default: never)")
     p = sub.add_parser("answers", parents=[common])
     p.add_argument("round")
@@ -388,6 +408,7 @@ def main(argv=None):
     p = sub.add_parser("ideas", parents=[common])
     p.add_argument("--all", action="store_true", help="every idea, not only the ones not shown yet")
     p = sub.add_parser("ask", parents=[common])
+    p.add_argument("--as", dest="owner", help="whose listener gets the answers")
     p.add_argument("file", nargs="?", help="the questions as JSON (- or nothing: stdin)")
     p.add_argument("--wait", action="store_true", help="then wait for the answers")
     p = sub.add_parser("config", parents=[common])
@@ -406,6 +427,10 @@ def main(argv=None):
         print(said)
         sys.exit(0 if ok else 1)
     root = proj.find_root(getattr(args, "project", None))
+    try:
+        owner = owner_name(args.owner if getattr(args, "owner", None) is not None else proj.default_owner())
+    except ValueError as e:
+        sys.exit(f"review-desk: {e}")
 
     if args.command == "start":
         start(root, open_browser=not args.no_open)
@@ -416,9 +441,9 @@ def main(argv=None):
         webbrowser.open(rt["url"])
         print(rt["url"])
     elif args.command == "status":
-        status(root, hook=args.hook)
+        status(root, hook=args.hook, owner=owner)
     elif args.command == "wait":
-        wait(root, args.timeout)
+        wait(root, args.timeout, owner)
     elif args.command == "ideas":
         board = Board(proj.review_dir(root))
         print(board_text(board, mark=True, every=args.all).rstrip() or "No new ideas on the Ideas tab.")
@@ -446,7 +471,7 @@ def main(argv=None):
         except (RuntimeError, ValueError, KeyError) as e:
             sys.exit(f"review-desk {args.command}: {e}")
     elif args.command == "ask":
-        ask(root, args.file, args.wait)
+        ask(root, args.file, args.wait, owner)
     elif args.command == "config":
         config(root, args.title, args.accent)
     elif args.command == "serve":
