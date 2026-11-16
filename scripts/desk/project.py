@@ -52,13 +52,17 @@ def main_checkout(top):
     return common.parent
 
 
-def default_owner(start=None):
-    """Who a session listens as when it doesn't say (`--as`): $REVIEW_DESK_AS, or, in a linked
-    git worktree, the worktree's folder name; "" (no owner, the plain case) otherwise."""
-    if os.environ.get("REVIEW_DESK_AS"):
+def default_owner(root, start=None):
+    """Who a session listens as on `root`'s desk when it doesn't say (`--as`): $REVIEW_DESK_AS
+    (set but empty: no name), or, in a linked git worktree of `root`, the worktree's folder name;
+    "" (no owner, the plain case) otherwise, also on any other project's desk."""
+    if "REVIEW_DESK_AS" in os.environ:
         return os.environ["REVIEW_DESK_AS"].strip()
     top = git(Path(start or os.getcwd()).resolve(), "rev-parse", "--show-toplevel")
-    return Path(top).name if top and main_checkout(Path(top).resolve()) else ""
+    if not top:
+        return ""
+    main = main_checkout(Path(top).resolve())
+    return Path(top).name if main and main == Path(root).resolve() else ""
 
 
 def review_dir(root):

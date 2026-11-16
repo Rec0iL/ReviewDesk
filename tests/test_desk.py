@@ -147,12 +147,39 @@ class ProjectTest(Temp):
         try:
             os.chdir(self.root / "side-task")
             self.assertEqual(project.find_root(), main.resolve())                  # the main checkout's desk
-            self.assertEqual(project.default_owner(), "side-task")                 # listening as itself
+            self.assertEqual(project.default_owner(main.resolve()), "side-task")   # listening as itself
             self.assertEqual(project.find_root(self.root / "side-task"), (self.root / "side-task").resolve())  # said so: its own
             os.chdir(main)
-            self.assertEqual((project.find_root(), project.default_owner()), (main.resolve(), ""))
+            self.assertEqual((project.find_root(), project.default_owner(main.resolve())), (main.resolve(), ""))
         finally:
             os.chdir(here)
+
+    def test_a_worktrees_name_counts_only_on_its_own_projects_desk(self):
+        main = git_repo(self.root / "main")
+        run = lambda *a: subprocess.run(["git", "-C", str(main), *a], check=True, capture_output=True)
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start")
+        run("worktree", "add", "-q", str(self.root / "side-task"))
+        other = self.root / "other"
+        other.mkdir()
+        project.ensure(other)
+        here, kept = os.getcwd(), os.environ.pop("REVIEW_DESK_AS", None)
+        try:
+            os.chdir(self.root / "side-task")
+            self.assertEqual(project.default_owner(main.resolve()), "side-task")   # its own project's desk
+            self.assertEqual(project.default_owner(other), "")                     # `--project` names another
+            os.environ["REVIEW_DESK_AS"] = ""                                      # said so: the plain case
+            self.assertEqual(project.default_owner(main.resolve()), "")
+            # the command, from inside the worktree, on another project's desk
+            del os.environ["REVIEW_DESK_AS"]
+            out = subprocess.run([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "--project", str(other), "status"],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertIn("listens for rounds with no `owner:`", out.stdout + out.stderr)
+            self.assertIn(f"rounds go in {other / '.review'}/<round>/checklist.md", out.stdout)
+        finally:
+            os.chdir(here)
+            os.environ.pop("REVIEW_DESK_AS", None)
+            if kept is not None:
+                os.environ["REVIEW_DESK_AS"] = kept
 
     def test_exclude_once(self):
         git_repo(self.root)
@@ -624,6 +651,27 @@ class ServerTest(ServerBase):
         rounds = self.request("GET", "/api/state")[1]["rounds"]
         self.assertTrue(rounds[0]["read"])
         self.assertIsNotNone(rounds[0]["sent"])
+
+    def test_a_wait_whose_caller_went_away_takes_nothing(self):
+        # A session stops its `wait` (the process ends): the request it left open must neither
+        # count as listening nor swallow the next hand-back.
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.port))
+        s.sendall((f"GET /api/wait?timeout=20 HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+                   f"X-Desk-Token: {self.desk.token}\r\n\r\n").encode())
+        deadline = time.time() + 5
+        while not self.desk.waits.get("") and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.desk.listening())
+        s.close()
+        time.sleep(0.3)
+        self.request("POST", "/api/send", {"round": "sample"})
+        events = self.request("GET", "/api/wait?timeout=1")[1]["events"]
+        self.assertEqual([e["round"] for e in events], ["sample"])         # still there for the next `wait`
+        deadline = time.time() + 3 + 6      # its own 1 s check, then LISTENING for the `wait` just made
+        while self.desk.listening() and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(self.desk.listening())
 
     def test_messages_and_claude(self):
         events = self.listen()
@@ -1137,6 +1185,33 @@ class CommandTest(Temp):
         finally:
             for w in (a, b, plain):
                 w.kill()
+            self.run_desk("stop")
+
+    def test_a_wait_outlives_a_restart_of_the_desk(self):
+        write_round(self.root, "sample")
+        self.run_desk("start", "--no-open")
+        waiter = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "--project", str(self.root),
+                                   "wait", "--as", "", "--timeout", "40"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not self.listening():
+                time.sleep(0.2)
+            self.assertTrue(self.listening())
+            self.run_desk("stop")
+            deadline = time.time() + 5
+            while time.time() < deadline and project.runtime(self.root):
+                time.sleep(0.1)
+            self.run_desk("start", "--no-open")
+            deadline = time.time() + 15
+            while time.time() < deadline and not self.listening():   # the `wait` finds the new desk
+                time.sleep(0.2)
+            self.assertTrue(self.listening())
+            from desk.cli import call
+            call(project.runtime(self.root), "POST", "/api/send", {"round": "sample"})
+            out, err = waiter.communicate(timeout=15)
+            self.assertIn("Handed back at", out, err)
+        finally:
+            waiter.kill()
             self.run_desk("stop")
 
     def listening(self):

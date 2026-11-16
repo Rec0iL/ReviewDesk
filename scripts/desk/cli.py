@@ -154,6 +154,7 @@ def status(root, hook=False, owner=""):
         return
     rt = running(root)
     print(f"{proj.settings(root)['title']} · " + (f"running on {rt['url']}, {rt['pages']} page(s) open" if rt else "not running"))
+    print(f"  rounds go in {folder}/<round>/checklist.md")
     rounds = Rounds(folder)
     for slug in rounds.slugs():
         try:
@@ -428,7 +429,7 @@ def main(argv=None):
         sys.exit(0 if ok else 1)
     root = proj.find_root(getattr(args, "project", None))
     try:
-        owner = owner_name(args.owner if getattr(args, "owner", None) is not None else proj.default_owner())
+        owner = owner_name(args.owner if getattr(args, "owner", None) is not None else proj.default_owner(root))
     except ValueError as e:
         sys.exit(f"review-desk: {e}")
 

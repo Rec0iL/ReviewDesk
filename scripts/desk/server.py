@@ -16,7 +16,9 @@ import os
 import queue
 import re
 import secrets
+import select
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -254,15 +256,23 @@ class Desk:
         """When each round was last handed back."""
         return {e["round"]: e["at"] for e in self.events.all() if e["type"] == "send" and e.get("round")}
 
-    def wait(self, timeout, owner=""):
+    def wait(self, timeout, owner="", gone=lambda: False):
         """What this owner's listener hasn't had yet (hand-backs, answers), as soon as there is
-        some; marked as had when it goes out, so it goes out once, and only to its owner."""
+        some; marked as had when it goes out, so it goes out once, and only to its owner.
+        `gone()` says the one asking stopped listening (its `wait` ended): it then gets nothing,
+        and stops counting as listening at once."""
         owner = owner_name(owner)
-        self.waits[owner] = self.waits.get(owner, 0) + 1
+        waiting, left_us = [], False
+        with LOCK:
+            self.waits[owner] = self.waits.get(owner, 0) + 1
         try:
             deadline = time.time() + timeout
             with self.events.changed:
                 while True:
+                    if gone():
+                        left_us = True
+                        waiting = []
+                        break
                     waiting = self.events.waiting(owner=owner)
                     if waiting:
                         self.events.mark(max(e["seq"] for e in waiting), owner)
@@ -270,10 +280,12 @@ class Desk:
                     left = deadline - time.time()
                     if left <= 0:
                         break
-                    self.events.changed.wait(left)
+                    self.events.changed.wait(min(left, 1.0))   # and every second: still there?
         finally:
-            self.waits[owner] -= 1
-            self.last_wait[owner] = time.time()
+            with LOCK:
+                self.waits[owner] -= 1
+                if not left_us:
+                    self.last_wait[owner] = time.time()
         if waiting:
             self.broadcast(type="handled", rounds=sorted({e.get("round") for e in waiting if e.get("round")}))
         return waiting
@@ -335,6 +347,16 @@ def handler_for(desk, server_ref, on_phone=False):
                 cookie = SimpleCookie(self.headers.get("Cookie", ""))
                 given = cookie["desk"].value if "desk" in cookie else ""
             return secrets.compare_digest(given, wanted)
+
+        def hung_up(self):
+            """The one asking closed its end (a `wait` that was stopped): nothing to read, and
+            reading says so. Nothing else comes on a `wait` request's line."""
+            try:
+                if not select.select([self.connection], [], [], 0)[0]:
+                    return False
+                return self.connection.recv(1, socket.MSG_PEEK) == b""
+            except (OSError, ValueError):
+                return True
 
         def body(self):
             length = int(self.headers.get("Content-Length") or 0)
@@ -407,7 +429,11 @@ def handler_for(desk, server_ref, on_phone=False):
                     return self.send_json(200, attach.commit(desk.root, query.get("ref", [""])[0]))
                 if path == "/api/wait":
                     timeout = min(max(float(query.get("timeout", [WAIT])[0]), 0), 120)
-                    return self.send_json(200, {"events": desk.wait(timeout, query.get("as", [""])[0])})
+                    events = desk.wait(timeout, query.get("as", [""])[0], self.hung_up)
+                    if not events and self.hung_up():
+                        self.close_connection = True   # nobody left to tell
+                        return
+                    return self.send_json(200, {"events": events})
             except (OSError, ValueError) as e:
                 return self.fail(400, str(e))
             self.reply(404, "nothing here", "text/plain")
