@@ -972,6 +972,7 @@ class ServerTest(ServerBase):
         from desk import cli
         mine = self.ask("Ship it?")
         self.request("POST", "/api/send", {"round": "sample", "answers": [{"id": mine, "answers": [{"chosen": ["Yes"], "note": "today"}]}]})
+        self.assertEqual(self.desk.sessions()[""]["claude"], 1)               # one hand-back, its answers with it
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed):
             cli.show_events(self.root, self.desk.wait(1))

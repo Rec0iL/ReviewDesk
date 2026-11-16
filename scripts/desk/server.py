@@ -169,7 +169,8 @@ class Desk:
         for q in self.questions.pending():
             get(q.get("owner", ""))["questions"] += 1
         for e in self.events.waiting_any():
-            get(e.get("owner", ""))["claude"] += 1
+            if not (e["type"] == "answer" and e.get("round")):   # answers given with a hand-back count as it
+                get(e.get("owner", ""))["claude"] += 1
         for o in self.listeners():
             get(o)["listening"] = True
         return out

@@ -264,7 +264,7 @@ function renderAsks() {
 function ownAsks() {
   if (!S.round || S.round.state.sent) return [];
   const owner = (summary() || {}).owner || "";
-  return (S.questions || []).filter((q) => (q.owner || "") === owner);
+  return (S.allQuestions || S.questions || []).filter((q) => (q.owner || "") === owner);
 }
 
 /**
