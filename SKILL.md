@@ -13,7 +13,9 @@ description: >-
 # Review Desk
 
 Each project gets one page, the desk, that runs in the background on this computer
-(127.0.0.1, a port of its own) and stays open in the user's browser. You write a round, a Markdown
+(127.0.0.1, a port of its own) and stays open in the user's browser. One tab is enough for all
+projects: its **Desks** list shows every running desk and lets the user switch to another one in
+the same tab. You write a round, a Markdown
 checklist; it shows up on the page within a second. The user answers each item (works, partly,
 needs a change with how bad, can't test, skipped), adds notes, questions, ideas, screenshots they
 mark up, recordings and log lines, and clicks **Hand back to Claude**. That wakes your background
@@ -30,7 +32,9 @@ the project around the current folder; `--project PATH` names another.
 ## The loop
 
 1. **Start the desk:** `review-desk start`. The first time, it opens the page in the user's
-   browser; later a tab still open finds it again by itself. Give the user the URL it prints.
+   browser; later a tab still open finds it again by itself, and when the user has a tab open on
+   another project's desk, that tab lists the new desk (with a chime) instead of a new tab
+   opening. Give the user the URL it prints.
 2. **Write the round:** `.review/<round>/checklist.md`, with a short slug for `<round>`
    (`m6a-video`, `login-fix`). The format is in `references/checklist.md`: read it before your
    first round. Put your pictures (before/after) in `.review/<round>/files/` and show them with
@@ -74,16 +78,25 @@ Sessions you start (in a git worktree or not) share the project's one desk, so t
 page. Each session listens only for its own rounds:
 
 - **Your name.** In a linked git worktree, the commands work on the main checkout's desk by
-  themselves and you listen as the worktree's folder name. Anywhere else, give a name with
-  `--as NAME` (or `REVIEW_DESK_AS=NAME`). `review-desk status` says which name you listen as.
-- **Your rounds.** Put `owner: NAME` in the header of every round you write. A round without
+  themselves and you listen as the worktree's folder name (on that desk only; with `--project`
+  naming another project you have no name there). Anywhere else, give a name with `--as NAME`
+  (or `REVIEW_DESK_AS=NAME`). `review-desk status` says which name you listen as, and where
+  rounds go.
+- **Your rounds' folder.** In a worktree, write rounds at `.review/<round>/` as usual: any
+  `review-desk` command there makes the worktree's `.review` lead to the main checkout's (git
+  ignores it), so your file tools may write there. Run `review-desk start` first.
+- **Your rounds.** Put `owner: NAME` in the header of every round you write, from the first
+  write on: a hand-back goes to the owner the header names at that moment. A round without
   `owner:` belongs to the session with no name (the main one, the plain case).
 - **Listening.** `review-desk wait --as NAME` (in a worktree plain `review-desk wait` is enough)
   returns only hand-backs of your rounds and answers to questions you asked with
   `review-desk ask --as NAME`. Hand-backs of other rounds stay queued for their own session; no
   listener takes another's. The Ideas tab goes to the session with no name.
 - **One `wait` per session.** Two at once with the same name: only one gets the next hand-back.
-  `review-desk status` and the page say so.
+  `review-desk status` and the page say so. Stopping a `wait` is safe: a hand-back that comes
+  after it stopped waits for the next one.
+- **On the page** the Desks list shows the project's sessions with what waits in each; the user
+  can show one session's rounds and question cards only.
 - `reply`, `retest`, `idea`, `answers` need no name: they name the round.
 
 One session alone needs none of this: no `owner:`, no `--as`, as before.
@@ -160,8 +173,16 @@ and `start`.
 
 ## Good to know
 
-- The desk stops by itself after a day with no page and no command. Starting it again keeps
-  everything; the same tab reconnects.
+- The desk stops by itself after a day with no page and no command (another desk's tab
+  listing it doesn't count). Starting it again keeps everything; the same tab reconnects, and
+  the other desks' tabs list it again.
+- **One tab for all desks.** Every running desk notes itself in `~/.local/state/review-desk/desks/`.
+  The page's Desks list shows each one with badges: a number for what waits for the user
+  (question cards, items back for another look, replies of yours they haven't opened), an
+  hourglass for a hand-back no `wait` has picked up yet, a green dot while a session listens.
+  A desk without a tab of its own chimes and notifies through the tab that is open. That tab
+  counts as an open page for `ask` and `status`. A desk still running older code joins the list
+  after `review-desk stop` and `start` (ask the user before restarting a desk with pages open).
 - The user can open the desk on their phone (the phone button on the page: a QR code over the home
   network, its own secret, closed after eight hours). The phone answers and takes photos but never
   runs commands. Only the user turns it on; never do it for them.

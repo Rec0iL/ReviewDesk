@@ -37,6 +37,7 @@ run, nothing to copy over.
 | **Question cards** | Claude's planning questions as cards while the page is open. |
 | **Tally** | Click "3 left" to jump to the items you haven't answered yet, one after another. |
 | **Summary** | A short Markdown summary of a round, to copy. |
+| **Every desk, one tab** | The Desks list shows every project's desk and each Claude session in it, with badges where a question, a reply or a hand-back waits. Switch in the same tab; one chime for all. |
 | **Phone** | A QR code opens the desk on your phone over your home network, with its own secret, closed after eight hours. Answer and take photos there; commands never run from the phone. |
 | **Look** | English and German, light and dark, the project's own accent colour. |
 

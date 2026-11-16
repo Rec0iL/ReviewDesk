@@ -14,8 +14,11 @@ import time
 import unittest
 from pathlib import Path
 
-# Desks the tests start never show desktop notifications.
+# Desks the tests start never show desktop notifications, and list themselves in a folder of
+# the tests' own (not the one your desks share).
 os.environ["REVIEW_DESK_NO_NOTIFY"] = "1"
+_DESKS = tempfile.TemporaryDirectory()
+os.environ["REVIEW_DESK_HOME"] = _DESKS.name
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -926,6 +929,200 @@ class ServerTest(ServerBase):
 
 
 # -- the phone -----------------------------------------------------------------------------------
+
+class SeenTest(Temp):
+    def test_replies_from_before_count_as_seen_and_opening_a_round_clears_new_ones(self):
+        write_round(self.root, "sample")
+        rounds = store.Rounds(self.root / ".review")
+        rounds.message("sample", "open", "reply", "Old one.", sender="claude")
+        seen = store.Seen(self.root / ".review")
+        seen.start(rounds)
+        unseen = lambda: rounds.summary("sample", seen.all().get("sample", set()))["unseen"]
+        self.assertEqual(unseen(), 0)                                   # from before: seen
+        rounds.message("sample", "open", "reply", "New one.", sender="claude")
+        rounds.message("sample", "overall", "reply", "On the whole round.", sender="claude")
+        rounds.message("sample", "open", "question", "Mine.", message_id="m1")
+        self.assertEqual(unseen(), 2)                                   # yours don't count
+        self.assertTrue(seen.mark(rounds, "sample"))
+        self.assertEqual(unseen(), 0)
+        self.assertFalse(seen.mark(rounds, "sample"))                   # nothing new: nothing written
+        rounds.set_overall("sample", "And this.")
+        rounds.send("sample")                                           # the overall thread moves into else1
+        self.assertIn("else1", rounds.state("sample")["items"])
+        self.assertEqual(unseen(), 0)                                   # and stays seen
+
+
+class PeersTest(Temp):
+    """Desks in this process, each in the shared list, one watching the others."""
+
+    def setUp(self):
+        super().setUp()
+        from desk import peers
+        self.peers = peers
+        self._poll, peers.POLL = peers.POLL, 2      # quicker to notice a desk that stopped
+
+    def tearDown(self):
+        self.peers.POLL = self._poll
+        super().tearDown()
+
+    def desk(self, name, title):
+        root = self.root / name
+        root.mkdir()
+        write_round(root, "sample")
+        project.save_settings(root, title=title)
+        server = make_server(root, port=0, quiet=True)
+        server.desk.url = f"http://127.0.0.1:{server.server_port}/"
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        project.write_json(root / ".review" / ".runtime.json", {"pid": os.getpid(), "port": server.server_port,
+                                                               "token": server.desk.token, "url": server.desk.url})
+        self.peers.register(root)
+        server.desk.stopped = False
+
+        def stop():
+            if not server.desk.stopped:
+                server.desk.stopped = True
+                server.shutdown()
+                server.server_close()
+                self.peers.unregister(root)
+                (root / ".review" / ".runtime.json").unlink(missing_ok=True)
+
+        server.desk.stop = stop
+        self.addCleanup(stop)
+        return server.desk
+
+    def watch(self, desk):
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        threading.Thread(target=desk.peers.run, args=(stop,), daemon=True).start()
+        self.assertTrue(self.until(lambda: desk.peers.scanned))
+
+    def stream(self, desk):
+        import queue as q
+        got = q.Queue()
+        conn = http.client.HTTPConnection("127.0.0.1", desk.port, timeout=10)
+        conn.request("GET", f"/api/events?t={desk.token}&c=page1", headers={"Host": f"127.0.0.1:{desk.port}"})
+        r = conn.getresponse()
+
+        def read():
+            try:
+                for line in r.fp:
+                    if line.startswith(b"data: "):
+                        got.put(json.loads(line[6:]))
+            except (OSError, ValueError):
+                pass
+
+        threading.Thread(target=read, daemon=True).start()
+        self.addCleanup(conn.close)
+        self.assertTrue(self.until(lambda: desk.local_pages() > 0))
+        return got
+
+    def until(self, check, seconds=5):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if check():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def peer_event(self, got, seconds=5):
+        import queue as q
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            try:
+                e = got.get(timeout=max(0.01, deadline - time.time()))
+            except q.Empty:
+                return None
+            if e["type"] == "peer":
+                return e
+        return None
+
+    def reply(self, desk, text):
+        from desk.server import claude_action
+        _, notice = claude_action(desk.rounds, {"action": "reply", "round": "sample", "item": "open", "text": text})
+        desk.claude_did("sample", **notice)
+
+    def test_desks_see_each_other_and_one_tab_tells_you_about_both(self):
+        a, b = self.desk("alpha", "Alpha"), self.desk("beta", "Beta")
+        page = self.stream(a)
+        self.watch(a)
+        self.assertTrue(self.until(lambda: len(a.desks()) == 2))
+        here, there = a.desks()
+        self.assertEqual((here["title"], here.get("here"), there["title"], there["url"]), ("Alpha", True, "Beta", b.url))
+        self.assertTrue(self.until(b.watched))                         # Alpha's tab shows Beta now
+        # Claude replies on Beta, which has no tab of its own: Alpha's tab tells you
+        self.reply(b, "Fixed.")
+        e = self.peer_event(page)
+        self.assertIsNotNone(e)
+        self.assertEqual((e["title"], e["url"], e["what"], e["slug"], e["item"]), ("Beta", b.url, "reply", "sample", "open"))
+        self.assertEqual(e["notify"]["body"], "Fixed.")
+        self.assertTrue(self.until(lambda: a.desks()[1]["sessions"][""]["replies"] == 1))
+        # Beta gets a tab of its own: that one tells you, Alpha's stays quiet
+        self.stream(b)
+        self.assertTrue(self.until(lambda: a.desks()[1]["pages"] == 1))
+        self.reply(b, "Again.")
+        self.assertIsNone(self.peer_event(page, 1.5))
+
+    def test_only_one_tab_tells_you(self):
+        a, b, c = self.desk("alpha", "Alpha"), self.desk("beta", "Beta"), self.desk("gamma", "Gamma")
+        pages = {d: self.stream(d) for d in (a, c)}
+        self.watch(a)
+        self.watch(c)
+        self.assertTrue(self.until(lambda: len(a.desks()) == 3 and len(c.desks()) == 3
+                                   and all(x["pages"] for x in a.desks() if x["title"] == "Gamma")
+                                   and all(x["pages"] for x in c.desks() if x["title"] == "Alpha")))
+        self.reply(b, "Fixed.")
+        lead = min((a, c), key=lambda d: d.port)
+        other = c if lead is a else a
+        self.assertIsNotNone(self.peer_event(pages[lead]))
+        self.assertIsNone(self.peer_event(pages[other], 1.5))
+
+    def test_asking_another_desk_doesnt_keep_it_alive(self):
+        b = self.desk("beta", "Beta")
+        before = b.last_seen
+        time.sleep(0.05)
+        got = self.peers.ask({"port": b.port, "token": b.token}, -1, watching=True)
+        self.assertEqual(got["title"], "Beta")
+        self.assertEqual(b.last_seen, before)                          # no page, no command: still idle
+        self.assertTrue(b.watched())
+        from desk.cli import call
+        self.assertTrue(call({"port": b.port, "token": b.token}, "GET", "/api/ping")["watched"])
+
+    def test_a_new_desk_is_announced_and_a_stopped_one_leaves(self):
+        a = self.desk("alpha", "Alpha")
+        page = self.stream(a)
+        self.watch(a)
+        b = self.desk("beta", "Beta")
+        e = self.peer_event(page)
+        self.assertIsNotNone(e)
+        self.assertEqual((e["what"], e["title"], e["url"]), ("desk", "Beta", b.url))
+        b.stop()
+        self.assertTrue(self.until(lambda: len(a.desks()) == 1, 10))
+        self.assertEqual(self.peers.listing().keys(), {str(a.root)})
+
+    def test_sessions_and_what_waits_in_each(self):
+        a = self.desk("alpha", "Alpha")
+        write_round(a.root, "side", SAMPLE.replace("commit: abc1234", "commit: abc1234\nowner: side"))
+        a.rounds.retest("side", ["open"], "look again")
+        a.questions.add({"title": "Q", "owner": "side", "questions": [
+            {"question": "Which?", "header": "W", "options": [{"label": "a"}, {"label": "b"}]}]})
+        a.events.add("send", round="sample", owner="")
+        got = a.sessions()
+        self.assertEqual(got["side"], {"questions": 1, "retests": 1, "replies": 0, "claude": 0, "listening": False})
+        self.assertEqual(got[""], {"questions": 0, "retests": 0, "replies": 0, "claude": 1, "listening": False})
+
+    def test_the_phone_hears_nothing_of_other_desks(self):
+        import queue as q
+        a = self.desk("alpha", "Alpha")
+        mine, phone_page = q.Queue(), q.Queue()
+        with a.clients_lock:
+            a.clients.extend([mine, phone_page])
+            a.phone_clients.append(phone_page)
+        for kind in ("peer", "desks", "round"):
+            a.broadcast(type=kind)
+        self.assertEqual([mine.get_nowait()["type"] for _ in range(3)], ["peer", "desks", "round"])
+        self.assertEqual(phone_page.get_nowait()["type"], "round")
+        self.assertTrue(phone_page.empty())
+
 
 class QrTest(unittest.TestCase):
     def test_reads_back(self):

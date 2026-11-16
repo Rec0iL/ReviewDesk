@@ -7,11 +7,14 @@ itself); `--project PATH` names another, before or after the command.
 
 - `review-desk start [--no-open]`: the desk in the background. The first time it opens the page in
   the browser (unless `--no-open`); when a tab from before is still open, that tab finds the desk
-  again within a few seconds and no new one opens. Prints the URL. Running it again is harmless.
+  again within a few seconds and no new one opens; when a tab is open on another project's desk,
+  that tab lists this one ("New desk", with a chime) and no new one opens either. Prints the URL.
+  Running it again is harmless.
 - `review-desk open`: shows the page in the browser (starting the desk if needed).
 - `review-desk stop`: stops it (also stops anything a Run started).
-- `review-desk status`: the project, whether it runs and how many pages are open, each round with
-  its numbers, where the user is right now, and what waits for you.
+- `review-desk status`: the project, whether it runs and how many pages are open (and whether a
+  tab on another desk shows this one), where rounds go, each round with its numbers, who listens,
+  where the user is right now, and what waits for you.
 - `review-desk status --hook`: a line only when answers wait, and one when an update is waiting (for the session-start hook).
 - `review-desk config --title "LightGrove" --accent "#7fb3ff"`: the name and colour the page shows.
 - `review-desk selftest`: checks that the desk works here (Python, parser, server, saving, QR).
@@ -43,6 +46,23 @@ itself); `--project PATH` names another, before or after the command.
 These work with the desk stopped too: they then write straight into `.review/`, and the page
 shows them when it next opens.
 
+## One tab for every desk
+
+Every running desk leaves a note in `~/.local/state/review-desk/desks/` (`$REVIEW_DESK_HOME/desks/`
+when that is set; `$XDG_STATE_HOME` is honoured) and removes it when it stops. Each desk asks the
+others what waits there and shows them in the page's **Desks** list:
+
+- each desk with its colour and badges: a number for what waits for the user (question cards,
+  items back for another look, Claude's replies they haven't opened yet), an hourglass for a
+  hand-back or answer no `wait` has picked up, a green dot while a session listens;
+- under the desk the page is on, its sessions (the main one, and each `owner:`): clicking one
+  shows only its rounds and question cards;
+- clicking another desk opens it in the same tab (its own address; Back goes back).
+
+A desk with no tab of its own chimes and notifies through the open tab (exactly one: the desk
+with the lowest port among those with a page); clicking that notification opens the desk at the
+item. Asking another desk doesn't keep it alive. The phone shows no Desks list.
+
 ## Files
 
 - `.review/<round>/checklist.md`: yours.
@@ -51,6 +71,7 @@ shows them when it next opens.
   `1-2-screenshot.png`, `pause-recording.webm`, `1-2-log.txt`).
 - `.review/<round>/state.json`: the answers as data (the desk's; don't edit it).
 - `.review/questions.json`, `events.jsonl`: question cards and what happened.
+- `.review/.seen.json`: which of your replies a page has shown the user (the rest count as new).
 - `.review/desk.json`: the title and accent. `.review/.desk.log`: the desk's log.
 
 ## Ideas that belong to no review
@@ -74,6 +95,7 @@ review-desk ask --as fix-login q.json     # its answers come to fix-login's wait
 REVIEW_DESK_AS=fix-login review-desk wait # the same, through the environment
 ```
 
-In a linked git worktree the name defaults to the worktree's folder name, and the commands use the
-main checkout's desk without `--project`. A round with no `owner:` goes to the listener with no
+In a linked git worktree the name defaults to the worktree's folder name (on its own project's
+desk only), the commands use the main checkout's desk without `--project`, and the worktree's
+`.review` becomes a link to the main checkout's, so rounds written there land on the desk. A round with no `owner:` goes to the listener with no
 name. Hand-backs nobody listens for stay queued until their owner's `wait` comes.

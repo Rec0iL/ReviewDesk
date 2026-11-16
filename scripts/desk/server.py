@@ -9,6 +9,7 @@
   write.
 - A watcher looks at `.review/` every second and tells the page when Claude changed a checklist.
 """
+import collections
 import html
 import json
 import mimetypes
@@ -28,10 +29,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import attach, markdown, phone, qr
+from . import attach, markdown, peers, phone, qr
 from . import project as proj
 from .runs import Runs
-from .store import LOCK, Board, Events, Questions, Rounds, ideas, messages, owner_name
+from .store import LOCK, Board, Events, Questions, Rounds, Seen, ideas, messages, owner_name
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE.parent.parent / "assets"
@@ -41,6 +42,7 @@ STATIC = {
     "/i18n.js": ("page/i18n.js", "text/javascript; charset=utf-8"),
     "/extras.js": ("page/extras.js", "text/javascript; charset=utf-8"),
     "/board.js": ("page/board.js", "text/javascript; charset=utf-8"),
+    "/desks.js": ("page/desks.js", "text/javascript; charset=utf-8"),
     "/fonts/plex-sans.ttf": ("fonts/IBMPlexSans-Variable.ttf", "font/ttf"),
     "/fonts/plex-mono.ttf": ("fonts/IBMPlexMono-Regular.ttf", "font/ttf"),
 }
@@ -61,6 +63,8 @@ class Desk:
         self.events = Events(self.folder)
         self.questions = Questions(self.folder)
         self.board = Board(self.folder)
+        self.seen = Seen(self.folder)
+        self.seen.start(self.rounds)
         self.token = proj.token(self.root)
         self.clients = []
         self.clients_lock = threading.Lock()
@@ -76,6 +80,14 @@ class Desk:
         # REVIEW_DESK_NO_NOTIFY=1 keeps the desktop quiet (the tests set it).
         self.notifier = None if quiet or os.environ.get("REVIEW_DESK_NO_NOTIFY") else shutil.which("notify-send")
         self.runs = Runs(self.root, self.rounds, self.broadcast)
+        # what the other desks see of this one: a number that goes up with every change, the
+        # notifications that came with them, and since when a tab on another desk shows it
+        self.serial = 0
+        self.serial_changed = threading.Condition()
+        self.notices = collections.deque(maxlen=50)
+        self.watched_until = 0.0
+        self.cached = (-1, None)
+        self.peers = peers.Peers(self)
         self.say = (lambda _: None) if quiet else (lambda text: print(text, flush=True))
 
     # -- live updates ------------------------------------------------------------------------
@@ -83,11 +95,86 @@ class Desk:
     def broadcast(self, **event):
         with self.clients_lock:
             for q in list(self.clients):
+                if q in self.phone_clients and event.get("type") in ("desks", "peer"):
+                    continue    # the phone reaches no other desk
                 q.put(event)
+        if event.get("type") not in ("run", "desks", "peer"):
+            self.bump(event)
+
+    def bump(self, event=None):
+        """Something the other desks may show changed (with a notification, when `event` has
+        one): their requests waiting on `/api/peer` return."""
+        note = (event or {}).get("notify")
+        with self.serial_changed:
+            self.serial += 1
+            if note:
+                self.notices.append((self.serial, {
+                    "kind": event.get("type"), "what": event.get("what"), "slug": event.get("slug"),
+                    "item": event.get("item"), "notify": note}))
+            self.serial_changed.notify_all()
 
     def connected(self):
         with self.clients_lock:
             return len(self.clients)
+
+    def local_pages(self):
+        """This computer's pages connected to the desk (not the phone's)."""
+        with self.clients_lock:
+            return len(self.clients) - len(self.phone_clients)
+
+    def watched(self):
+        """Is a tab on another desk showing this one (its Desks list, its chime)?"""
+        return time.time() < self.watched_until
+
+    # -- what the other desks see ------------------------------------------------------------
+
+    def sessions(self, state=None):
+        """Each session on this desk (by owner, "" for the main one) and what waits there: for
+        you (question cards, items back for another look, Claude's replies you haven't opened),
+        for Claude (hand-backs and answers its `wait` hasn't taken), and whether it listens."""
+        state = state or self.state()
+        out = {}
+        get = lambda o: out.setdefault(o, {"questions": 0, "retests": 0, "replies": 0, "claude": 0, "listening": False})
+        for r in state["rounds"]:
+            x = get(r.get("owner", ""))
+            x["retests"] += (r.get("counts") or {}).get("retest", 0)
+            x["replies"] += r.get("unseen", 0)
+        for q in self.questions.pending():
+            get(q.get("owner", ""))["questions"] += 1
+        for e in self.events.waiting_any():
+            get(e.get("owner", ""))["claude"] += 1
+        for o in self.listeners():
+            get(o)["listening"] = True
+        return out
+
+    def summary(self):
+        """This desk as the Desks list shows it (kept until something changes)."""
+        serial = self.serial
+        if self.cached[0] == serial:
+            return self.cached[1]
+        settings = proj.settings(self.root)
+        data = {"project": str(self.root), "title": settings["title"], "accent": settings["accent"],
+                "url": self.url, "port": self.port, "pages": self.local_pages(), "sessions": self.sessions()}
+        self.cached = (serial, data)
+        return data
+
+    def peer(self, since, timeout, watching):
+        """What another desk asks: how this one is, as soon as something changed after
+        `since` (-1: right away), with the notifications since then."""
+        if watching:
+            self.watched_until = max(self.watched_until, time.time() + timeout + 15)
+        deadline = time.time() + timeout
+        with self.serial_changed:
+            while since >= 0 and self.serial <= since and time.time() < deadline:
+                self.serial_changed.wait(max(0.0, deadline - time.time()))
+            serial = self.serial
+            notices = [n for k, n in self.notices if since >= 0 and k > since]
+        return self.summary() | {"serial": serial, "notices": notices}
+
+    def desks(self):
+        """Every running desk this one knows, itself first."""
+        others = sorted(self.peers.all().values(), key=lambda d: d.get("title", "").lower())
+        return [self.summary() | {"here": True}] + others
 
     # -- the phone ------------------------------------------------------------------------------
 
@@ -174,7 +261,7 @@ class Desk:
         note = {"title": title, "body": body}
         self.broadcast(type=kind, slug=slug, by="claude", what=what, item=item, notify=note)
         pages = [p for p in self.pages.values() if time.time() - p.get("at", 0) < 120]
-        if self.notifier and not any(p.get("visible") or p.get("notify") for p in pages):
+        if self.notifier and not self.watched() and not any(p.get("visible") or p.get("notify") for p in pages):
             threading.Thread(target=self.desktop_notification, args=(title, body), daemon=True).start()
 
     def desktop_notification(self, title, body):
@@ -239,10 +326,11 @@ class Desk:
 
     def state(self):
         last_send = {e.get("round"): e for e in self.events.all() if e["type"] == "send"}
+        seen = self.seen.all()
         rounds = []
         for slug in self.rounds.slugs():
             try:
-                summary = self.rounds.summary(slug)
+                summary = self.rounds.summary(slug, seen.get(slug, set()))
                 summary["owner"] = self.owner_of(slug)
                 e = last_send.get(slug)
                 summary["read"] = bool(e) and self.events.handled(e.get("owner", "")) >= e["seq"]
@@ -370,7 +458,8 @@ def handler_for(desk, server_ref, on_phone=False):
         # -- GET -----------------------------------------------------------------------------
 
         def do_GET(self):
-            desk.last_seen = time.time()
+            if not self.path.startswith("/api/peer?"):
+                desk.last_seen = time.time()     # another desk asking keeps none alive
             if not self.ours():
                 return self.reply(403, "not here", "text/plain")
             url = urlparse(self.path)
@@ -389,7 +478,8 @@ def handler_for(desk, server_ref, on_phone=False):
                 name, kind = STATIC[path]
                 return self.reply(200, (ASSETS / name).read_bytes(), kind)
             if path == "/api/ping" and not on_phone:
-                return self.send_json(200, {"project": str(desk.root), "pid": os.getpid(), "pages": desk.connected()})
+                return self.send_json(200, {"project": str(desk.root), "pid": os.getpid(), "pages": desk.connected(),
+                                            "watched": desk.watched()})
             if path.startswith("/files/") and (not on_phone or self.token_ok(query)):
                 return self.file(unquote(path.removeprefix("/files/")))
             if not self.token_ok(query):
@@ -427,6 +517,12 @@ def handler_for(desk, server_ref, on_phone=False):
                     return self.send_json(200, attach.source(desk.root, query.get("path", [""])[0]))
                 if path == "/api/commit":
                     return self.send_json(200, attach.commit(desk.root, query.get("ref", [""])[0]))
+                if path == "/api/peer" and not on_phone:
+                    since = int(query.get("since", ["-1"])[0])
+                    timeout = min(max(float(query.get("timeout", [peers.POLL])[0]), 0), 60)
+                    return self.send_json(200, desk.peer(since, timeout, query.get("watching", ["0"])[0] == "1"))
+                if path == "/api/desks" and not on_phone:
+                    return self.send_json(200, {"desks": desk.desks()})
                 if path == "/api/wait":
                     timeout = min(max(float(query.get("timeout", [WAIT])[0]), 0), 120)
                     events = desk.wait(timeout, query.get("as", [""])[0], self.hung_up)
@@ -505,6 +601,7 @@ def handler_for(desk, server_ref, on_phone=False):
                     desk.phone_clients.append(q)
             if client:
                 desk.pages.setdefault(client, {"visible": True, "notify": False, "at": time.time()})
+            desk.bump()     # the other desks' lists say whether it has a tab
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
@@ -531,6 +628,7 @@ def handler_for(desk, server_ref, on_phone=False):
                     if q in desk.phone_clients:
                         desk.phone_clients.remove(q)
                 desk.pages.pop(client, None)
+                desk.bump()
                 self.close_connection = True
 
         # -- POST ----------------------------------------------------------------------------
@@ -654,6 +752,10 @@ def handler_for(desk, server_ref, on_phone=False):
                                 owner=answered.get("owner", ""))
                 desk.broadcast(type="questions", client=data.get("client"))
                 return {"question": answered}
+            if path == "/api/seen":
+                if desk.seen.mark(rounds, slug):
+                    desk.broadcast(type="seen", slug=slug, client=data.get("client"))
+                return {"ok": True}
             if path == "/api/presence":
                 if data.get("item") is not None:
                     desk.presence = {"round": slug, "item": data.get("item"), "at": time.strftime("%H:%M:%S")}
@@ -665,7 +767,7 @@ def handler_for(desk, server_ref, on_phone=False):
                 asked = desk.questions.add(data)
                 first = asked["questions"][0]["question"]
                 desk.claude_did(None, "ask", title=asked["title"] or "Claude has a question", body=first, kind="questions")
-                return {"question": asked, "pages": desk.connected()}
+                return {"question": asked, "pages": desk.connected() or int(desk.watched())}
             if path == "/api/claude":
                 result, notice = claude_action(rounds, data, desk.board)
                 if notice and data.get("round") == "board":
@@ -797,6 +899,8 @@ def serve(root, port=None):
                               "started": time.strftime("%Y-%m-%d %H:%M:%S")})
     stop = threading.Event()
     threading.Thread(target=desk.watch, args=(stop,), daemon=True).start()
+    peers.register(desk.root)
+    threading.Thread(target=desk.peers.run, args=(stop,), daemon=True).start()
 
     def idle():
         while not stop.wait(60):
@@ -812,5 +916,6 @@ def serve(root, port=None):
         desk.runs.stop_all()
         desk.phone_off()
         server.server_close()
+        peers.unregister(desk.root)
         if (proj.read_json(runtime, {}) or {}).get("pid") == os.getpid():
             runtime.unlink(missing_ok=True)

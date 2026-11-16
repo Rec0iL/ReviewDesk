@@ -39,6 +39,7 @@ const ICONS = {
   box: '<rect x="4.5" y="6" width="15" height="12" rx="1"/>',
   blur: '<path d="M4 4h4v4H4zM12 4h4v4h-4zM8 8h4v4H8zM16 8h4v4h-4zM4 12h4v4H4zM12 12h4v4h-4zM8 16h4v4H8zM16 16h4v4h-4z" fill="currentColor" stroke="none"/>',
   undo: '<path d="M8.5 8.5H15a4.5 4.5 0 0 1 0 9h-5"/><path d="M11.5 5L8 8.5l3.5 3.5"/>',
+  hourglass: '<path d="M7 3.5h10M7 20.5h10"/><path d="M8 3.5c0 4.5 8 4.5 8 8.5s-8 4-8 8.5M16 3.5c0 4.5-8 4.5-8 8.5s8 4 8 8.5"/>',
 };
 const LAST = "review-desk:last";
 const LANG = "review-desk:lang";
@@ -65,7 +66,10 @@ const S = {
   view: "round",        // or "ideas": the Ideas board
   ideas: [],
   ideaFilter: "all",
-  questions: [],        // Claude's question sets waiting for answers
+  questions: [],        // Claude's question sets waiting for answers (of the session shown)
+  allQuestions: [],     // ... of every session
+  desks: [],            // every running desk, this one first (the Desks list)
+  session: keptSession(), // the session the sidebar shows (null: all)
   jump: null,           // the tally's last jump: {v, id} (the item it went to)
   hidden: [],           // items the browser doesn't show (an extension hid or removed their cards)
   phoneOn: Boolean(BOOT.phone),
@@ -129,9 +133,11 @@ const clock = (at) => (at || "").slice(11, 16) || at || "";
 const recall = () => stored(LAST);
 const remember = (patch) => store(LAST, { ...recall(), ...patch });
 
-function toast(text) {
+function toast(text, action) {
   const box = $("#toast");
   box.textContent = text;
+  box.onclick = action ? () => { box.classList.remove("shown"); action(); } : null;
+  box.classList.toggle("link", Boolean(action));
   box.classList.add("shown");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => box.classList.remove("shown"), 4800);
@@ -164,6 +170,8 @@ async function loadState() {
     syncSide();
     refreshHead();
   } else renderSide();
+  markSeen();
+  loadDesks();
 }
 
 function summary() {
@@ -270,6 +278,9 @@ function connect() {
 
 async function onEvent(event) {
   if (event.client === CLIENT) return; // our own change coming back
+  if (event.type === "peer") return announcePeer(event);
+  if (event.type === "desks") return loadDesks();
+  if (event.type === "seen") return loadState();
   if (event.type === "run") return onRun(event);
   if (event.type === "phone") {
     S.phoneOn = Boolean(event.on);
@@ -279,10 +290,12 @@ async function onEvent(event) {
   if (event.type === "listening") {
     if (S.state) Object.assign(S.state, { listening: event.on, listeners: event.listeners || S.state.listeners });
     refreshHead();
+    loadDesks();
     return;
   }
   if (event.type === "questions") {
     await loadQuestions();
+    loadDesks();
     if (event.notify) announce(event);
     return;
   }
@@ -785,7 +798,7 @@ function renderSide() {
   renderViews();
   const list = $("#rounds");
   list.innerHTML = "";
-  const rounds = (S.state && S.state.rounds) || [];
+  const rounds = shownRounds();
   if (!rounds.length) {
     list.append(el("li", "empty", esc(t("no.rounds"))));
     return;
@@ -800,7 +813,8 @@ function renderSide() {
     if (r.round > 1) bits.push(esc(t("round", { n: r.round })));
     if (r.sent) bits.push(`<span class="sent">${esc(t("side.sent"))}</span>`);
     b.innerHTML = `${ring(c)}<span><span class="title">${esc(r.title)}</span><span class="sub">${bits.join(" · ")}</span></span>`
-      + (c.retest ? `<span class="badge" title="${esc(t("retest.count", { n: c.retest }))}">${c.retest}</span>` : "");
+      + (c.retest ? `<span class="badge" title="${esc(t("retest.count", { n: c.retest }))}">${c.retest}</span>`
+        : r.unseen ? `<span class="new-dot" title="${esc(t("new.replies"))}"></span>` : "");
     li.append(b);
     list.append(li);
   }
@@ -1291,6 +1305,7 @@ function renderMain({ keepPlace = false } = {}) {
   }
   if (keepPlace) holdPlace(anchor, wrap);
   checkHidden();
+  markSeen();
 }
 
 // -- start -----------------------------------------------------------------------------------------
@@ -1337,6 +1352,7 @@ $("#lang").onchange = (e) => {
   renderWords();
   renderSide();
   renderAsks();
+  renderDesks();
   if (S.view === "ideas") renderIdeas();
   else renderMain({ keepPlace: true });
 };
@@ -1352,6 +1368,7 @@ window.addEventListener("scroll", onScroll, { passive: true });
   initExtras();
   renderWords();
   watchHidden();
+  arrived();
   try {
     await loadState();
     const last = recall();

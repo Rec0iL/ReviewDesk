@@ -232,10 +232,11 @@ async function removeIdea(id) {
 
 async function loadQuestions() {
   try {
-    S.questions = (await api("/api/questions")).questions;
+    S.allQuestions = (await api("/api/questions")).questions;
   } catch {
-    S.questions = S.questions || [];
+    S.allQuestions = S.allQuestions || [];
   }
+  sessionQuestions();
   renderAsks();
 }
 

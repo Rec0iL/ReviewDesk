@@ -93,3 +93,21 @@ pages); declined for now.
 the plan only: plans stay where the user keeps them), a message field on the hand-back button
 (shown first by `wait`, kept in `answers.md`), a collapsible sidebar (button, Ctrl+B). 51 tests;
 checked in the browser pane (hover field, sidebar, plan wording in German).
+
+## One tab for every desk (2026-11-16)
+
+Plan on the desk as `one-tab-plan` (a copy; this is the list). Part 1, sub-session bugs, fixed
+first: `3ab875a` (a worktree's name only on its own desk; a stopped `wait` takes nothing),
+`8e5128d` (a worktree's `.review` leads to the main checkout's).
+
+- [x] Registry of running desks (`~/.local/state/review-desk/desks/`), written at start, removed
+      at stop; stale entries ignored
+- [x] `/api/peer` on each desk: title, accent, url, sessions with badges (for you: questions,
+      retests, unseen replies; for Claude: hand-backs not picked up; listening), long-polled by
+      the other desks; peers don't keep a desk alive
+- [x] Seen marks for Claude's replies (`.review/.seen.json`, baseline at first start)
+- [x] The page: Desks list with projects and sessions, session filter, peer chimes and
+      notifications (not twice), "New desk" instead of a new tab
+- [x] `start` opens no tab when another desk's tab watches; `status`/`ask` count that tab
+- [x] Phone: no Desks list, no peer events
+- [ ] Tests, `SKILL.md`, `references/commands.md`, a check round with screenshots

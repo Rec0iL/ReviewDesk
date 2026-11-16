@@ -8,6 +8,7 @@ import json
 import re
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from . import markdown
@@ -112,14 +113,18 @@ class Rounds:
         write_json(self.path(slug, "state.json"), state)
         self.path(slug, "answers.md").write_text(answers_md(slug, doc, state), encoding="utf-8")
 
-    def summary(self, slug):
-        """What the sidebar shows of a round."""
+    def summary(self, slug, seen=None):
+        """What the sidebar shows of a round (with `seen`, the keys of Claude's messages a page
+        has shown: how many it hasn't)."""
         doc = self.doc(slug)
         state = self.state(slug, doc)
-        return {
+        out = {
             "slug": slug, "title": doc["title"], "about": doc["about"], "created": state["created"],
             "round": state["round"], "sent": state["sent"], "counts": counts(state),
         }
+        if seen is not None:
+            out["unseen"] = len(claude_keys(state) - seen)
+        return out
 
     # -- changes (each under the lock, each saved) -------------------------------------------
 
@@ -368,6 +373,48 @@ def counts(state):
         c["broken"] += a["severity"] == "broken"
         c["total"] += 1
     return c
+
+
+def claude_keys(state):
+    """Claude's messages in a round, each by a key that stays when its thread moves (what you
+    wrote under "Anything else?" becomes an item of its own at a hand-back)."""
+    threads = [a["messages"] for a in state["items"].values()] + [state["overall"]["messages"]]
+    return {format(zlib.crc32(f"{m['id']}|{m.get('at')}|{m.get('text')}".encode("utf-8")), "08x")
+            for thread in threads for m in thread if m.get("from") == "claude"}
+
+
+class Seen:
+    """Which of Claude's replies a page has shown you (`.seen.json`): the rest are new, and the
+    Desks list counts them. The first time, everything there already counts as seen."""
+
+    def __init__(self, folder):
+        self.path = Path(folder) / ".seen.json"
+
+    def start(self, rounds):
+        if self.path.exists():
+            return
+        data = {}
+        for slug in rounds.slugs():
+            try:
+                data[slug] = sorted(claude_keys(rounds.state(slug)))
+            except (OSError, ValueError):
+                continue
+        write_json(self.path, {"rounds": data})
+
+    def all(self):
+        return {k: set(v) for k, v in ((read_json(self.path, {}) or {}).get("rounds") or {}).items()}
+
+    def mark(self, rounds, slug):
+        """The page shows you the round now: every reply in it counts as seen."""
+        keys = claude_keys(rounds.state(slug))
+        with LOCK:
+            data = read_json(self.path, {}) or {}
+            kept = data.setdefault("rounds", {})
+            if set(kept.get(slug, [])) >= keys:
+                return False
+            kept[slug] = sorted(keys | set(kept.get(slug, [])))
+            write_json(self.path, data)
+        return True
 
 
 def quoted(body, pad="  "):

@@ -80,7 +80,31 @@ svg.icon { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-w
 .rounds .sub .sent { color: var(--works); }
 .rounds .badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); }
 .rounds .empty { color: var(--dim); padding: 8px 10px; font-size: 13.5px; }
+.rounds .new-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); justify-self: end; }
 .ring { width: 34px; height: 34px; }
+
+/* -- the Desks list: every running desk, and this one's sessions ------------------------------ */
+.desks { border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 6px; max-height: 42vh; overflow-y: auto; flex: none; }
+.desks h2 { margin-top: 0; }
+.desk-list, .desk-list .sessions { list-style: none; margin: 0; padding: 0 10px; display: grid; gap: 2px; }
+.desk-list .sessions { padding: 2px 0 4px 18px; }
+.desk-row, .session-row {
+  width: 100%; display: flex; align-items: center; gap: 9px; text-align: left;
+  padding: 6px 10px; border-radius: 9px; border-color: transparent; background: transparent; color: var(--dim);
+}
+.desk-row:hover, .session-row:hover { background: var(--raised); border-color: var(--border); color: var(--text); }
+.desk-row[aria-current="true"], .session-row[aria-current="true"] {
+  background: var(--accent-soft); color: var(--text); border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.desk-row .title, .session-row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.desk-row .title { font-weight: 500; color: var(--text); }
+.session-row .title { font-size: 13px; }
+.desk-row .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.marks { display: flex; align-items: center; gap: 6px; flex: none; }
+.marks .badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: var(--accent-ink); }
+.marks .live { width: 7px; height: 7px; border-radius: 50%; background: var(--works); }
+.marks .for-claude { color: var(--partly); line-height: 0; }
+.marks .for-claude svg.icon { width: 14px; height: 14px; }
 .ring circle { fill: none; stroke-width: 4; }
 .side .foot { border-top: 1px solid var(--border); padding: 10px 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .side .foot select { background: var(--control); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
@@ -467,6 +491,8 @@ dialog.phone { width: min(440px, calc(100vw - 32px)); }
   padding: 10px 16px; transition: opacity 0.2s, transform 0.2s; pointer-events: none; max-width: calc(100% - 32px);
 }
 .toast.shown { opacity: 1; transform: translate(-50%, 0); }
+.toast.shown.link { pointer-events: auto; cursor: pointer; }
+.toast.link::after { content: " →"; color: var(--accent-text); }
 
 /* -- narrow screens: the rounds above, as a strip ---------------------------------------- */
 @media (max-width: 760px) {
@@ -487,6 +513,12 @@ dialog.phone { width: min(440px, calc(100vw - 32px)); }
   .rounds { display: flex; gap: 6px; overflow-x: auto; padding: 0 12px 10px; flex: none; }
   .rounds li { flex: none; }
   .rounds li button { width: 230px; }
+  /* the Desks list as a strip too: desks, then this one's sessions */
+  .desks { max-height: none; overflow: visible; margin-bottom: 4px; }
+  .desk-list { display: flex; gap: 6px; overflow-x: auto; padding: 0 12px 6px; }
+  .desk-list > li { display: contents; }
+  .desk-list .sessions { display: contents; }
+  .desk-row, .session-row { width: auto; flex: none; max-width: 220px; border-color: var(--border); }
   .wrap { padding: 0 16px 100px; }
   .head .row { flex-wrap: wrap; }
   .head .actions { margin-left: 0; width: 100%; justify-content: space-between; }

@@ -80,12 +80,18 @@ def running(root):
         ping = call(rt, "GET", "/api/ping", timeout=3)
     except (OSError, RuntimeError, ValueError):
         return None
-    return rt | {"pages": ping.get("pages", 0)} if ping.get("project") == str(root) else None
+    return rt | {"pages": ping.get("pages", 0), "watched": ping.get("watched", False)} if ping.get("project") == str(root) else None
 
 
 def pages(root):
     """How many pages are connected to the desk (0 when it doesn't answer)."""
     return (running(root) or {}).get("pages", 0)
+
+
+def seen(root):
+    """Does a page show the desk: one of its own, or a tab on another desk (its Desks list)?"""
+    rt = running(root) or {}
+    return rt.get("pages", 0) > 0 or rt.get("watched", False)
 
 
 def start(root, open_browser=True, quiet=False):
@@ -104,11 +110,12 @@ def start(root, open_browser=True, quiet=False):
         if not rt:
             sys.exit(f"the desk didn't start; see {proj.review_dir(root) / '.desk.log'}")
     if open_browser and fresh:
-        # A tab still open from before finds the desk again by itself within a few seconds.
+        # A tab still open from before finds the desk again by itself within a few seconds, and
+        # a tab on another desk shows this one in its Desks list (it says "New desk").
         deadline = time.time() + 3.5
-        while time.time() < deadline and pages(root) == 0:
+        while time.time() < deadline and not seen(root):
             time.sleep(0.25)
-        if pages(root) == 0:
+        if not seen(root):
             webbrowser.open(rt["url"])
     if not quiet:
         print(f"Review Desk for {root.name}: {rt['url']}" + ("" if fresh else " (already running)"))
@@ -153,7 +160,8 @@ def status(root, hook=False, owner=""):
             print(newer)
         return
     rt = running(root)
-    print(f"{proj.settings(root)['title']} · " + (f"running on {rt['url']}, {rt['pages']} page(s) open" if rt else "not running"))
+    print(f"{proj.settings(root)['title']} · " + (f"running on {rt['url']}, {rt['pages']} page(s) open" if rt else "not running")
+          + (" (and a tab on another desk shows this one)" if rt and rt.get("watched") else ""))
     print(f"  rounds go in {folder}/<round>/checklist.md")
     rounds = Rounds(folder)
     for slug in rounds.slugs():
