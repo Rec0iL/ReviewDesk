@@ -617,6 +617,7 @@ async function handBack() {
     answers = await walkAsks();
     if (!answers) return;
   }
+  postDrafts();   // what waits in a writing box goes in first
   const handBtn = $(".head .hand");
   const rect = handBtn.getBoundingClientRect();
   const label = handBtn.textContent.trim();
@@ -1040,17 +1041,20 @@ function blocks(list, into) {
 
 function autosize(area) {
   if (area.hidden || !area.isConnected) return;
-  const least = area.classList.contains("big") ? 100 : area.classList.contains("small") ? 40 : 60;
+  const least = area.classList.contains("big") ? 100 : area.classList.contains("small") ? 40 : area.classList.contains("compose") ? 30 : 60;
   area.style.height = "auto";
   area.style.height = `${Math.max(least, area.scrollHeight + 2)}px`;
 }
 
-// -- the conversation: your answers, questions and ideas, Claude's replies and re-test notes ------
+// -- the conversation: what you said and picked, Claude's replies and re-test notes, in time order --
 //
-// One column in time order, oldest at the top: yours on the right, Claude's on the left, a thin
-// line where Claude sent the item back for another look. Claude's newest bubble is marked.
+// One column, oldest at the top: yours on the right, Claude's on the left, a thin line where Claude
+// sent the item back for another look. Claude's newest bubble is marked. Everything you add goes in
+// through the writing box at the bottom and lands below the last bubble.
 
 const unfolded = new Set();   // older rounds you opened ("item:round"), while the page is open
+const editing = new Set();    // your bubbles open for changing their words
+const DRAFT = "review-desk:draft";
 
 function newId() {
   return `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -1068,6 +1072,25 @@ function stampAnswer(a) {
   a.answered = a.verdict || a.note.trim() || a.files.length ? a.answered || nowStamp() : null;
 }
 
+/** As the desk does it (store.mark): the verdict you picked as a line in the conversation; changing
+ *  your mind right away changes that line, a first verdict taken back right away goes. */
+function markLocally(a, before) {
+  const thread = a.messages;
+  const last = thread[thread.length - 1];
+  const fresh = last && last.kind === "mark" && !(a.retest && a.retest.at >= last.at);
+  if (a.verdict === before) {
+    const lines = thread.filter((m) => m.kind === "mark");
+    if (lines.length) lines[lines.length - 1].severity = a.severity;
+  } else if (fresh && !a.verdict && !last.prev) {
+    thread.pop();
+  } else if (fresh) {
+    Object.assign(last, { verdict: a.verdict, severity: a.severity, at: nowStamp() });
+  } else {
+    thread.push({ id: `v-${newId()}`, from: "you", kind: "mark", text: "", verdict: a.verdict, severity: a.severity,
+      at: nowStamp(), ...(before ? { prev: before } : {}) });
+  }
+}
+
 /** A bubble's time: the clock today, with the day before that. */
 function when(at) {
   if (!at) return "";
@@ -1081,9 +1104,10 @@ function verdictChip(v, severity) {
   return `<span class="chip verdict" style="background:${colour(v)}">${esc(t(v))}${severity && !isPlan() ? ` · ${esc(t(severity))}` : ""}</span>`;
 }
 
-/** The order of an item's conversation. Each re-test starts a round; a message belongs to the
- *  round whose re-test came before it. In a round: Claude's note on what changed, then your
- *  answer and the messages by time (an answer from before answers had a time: at the start). */
+/** The order of an item's conversation. Each re-test starts a round; a message or file belongs to
+ *  the round whose re-test came before it. In a round: Claude's note on what changed first, then
+ *  the rest by time. Answers from before verdicts and notes were messages (one note per round)
+ *  show as a verdict line and a note bubble at the time you first answered. */
 function entriesOf(a, list) {
   const history = a ? a.history : [];
   const last = history.length;
@@ -1095,27 +1119,71 @@ function entriesOf(a, list) {
     return k;
   };
   const out = [];
+  const marked = new Set(list.filter((m) => m.kind === "mark").map((m) => roundOf(m.at)));
+  const start = (k) => (openers[k] && openers[k].at) || "";
   openers.forEach((r, k) => {
     if (r) out.push({ type: "retest", seg: k, key: "", rank: 0, r, html: k < last ? history[k].retest_html : r.html });
   });
-  history.forEach((h, k) => {
-    if (h.verdict || h.note.trim() || h.files.length) {
-      out.push({ type: "past", seg: k, key: h.answered || (openers[k] && openers[k].at) || "", rank: 1, h });
+  const answers = a ? [...history.map((h, k) => ({ h, k, past: true })), { h: a, k: last, past: false }] : [];
+  for (const { h, k, past } of answers) {
+    const key = h.answered || start(k);
+    if (h.verdict && !marked.has(k) && (past || h.answered)) {
+      out.push({ type: "mark", seg: k, key, rank: 1, m: { verdict: h.verdict, severity: h.severity, at: h.answered } });
     }
+    if (h.note.trim()) out.push({ type: "oldnote", seg: k, key, rank: 2.5, h, past });   // after its verdict line of the same minute
+    for (const f of h.files) out.push({ type: "file", seg: roundOf(f.at), key: f.at || "~", rank: 2, f, past });
+  }
+  list.forEach((m, i) => {
+    if (m.from !== "claude" && m.kind !== "mark" && !m.text.trim() && !editing.has(m.id)) return; // never written
+    out.push({ type: m.kind === "mark" ? "mark" : "msg", seg: roundOf(m.at), key: m.at || "~", rank: 2, m, i });
   });
-  if (a) out.push({ type: "answer", seg: last, key: a.answered || (a.retest && a.retest.at) || "", rank: 1 });
-  list.forEach((m, i) => out.push({ type: "msg", seg: roundOf(m.at), key: m.at || "~", rank: 2, m, i }));
   const by = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
   return out.sort((x, y) => x.seg - y.seg || by(x.key, y.key) || x.rank - y.rank || (x.i || 0) - (y.i || 0));
 }
 
 /** The line a reply starts with: what it answers, in a few words; a click shows that bubble. */
+function quoteText(target) {
+  const who = target.from === "claude" ? t("claude") : t("your." + target.kind);
+  return `${who}: ${(target.text || "").trim().split("\n")[0].replace(/[`*]/g, "")}`;   // Claude's Markdown, as plain words
+}
+
 function quoteLine(m, list, wrap) {
   const target = m.to && list.find((x) => x.id === m.to);
   if (!target) return null;
-  const who = target.from === "claude" ? t("claude") : t("your." + target.kind);
-  const words = (target.text || "").trim().split("\n")[0].replace(/[`*]/g, "");   // Claude's Markdown, as plain words
-  return button("quote", `${icon("reply")}<span>${esc(who)}: ${esc(words)}</span>`, () => wrap.show(target.id), t("quote.show"));
+  return button("quote", `${icon("reply")}<span>${esc(quoteText(target))}</span>`, () => wrap.show(target.id), t("quote.show"));
+}
+
+/** Words you can change in place: plain text, or a box while ✎ is on. */
+function editable(box, key, text, save) {
+  if (!editing.has(key)) {
+    box.append(el("div", "said mine", esc(text)));
+    return;
+  }
+  const area = el("textarea", "note small");
+  area.rows = 1;
+  area.value = text;
+  area.dataset.edit = key;
+  area.oninput = () => {
+    autosize(area);
+    save(area.value);
+  };
+  area.onkeydown = (e) => {
+    if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) area.blur();
+  };
+  area.onblur = () => {
+    editing.delete(key);
+    const wrap = box.closest(".convo-wrap");
+    setTimeout(() => wrap?.draw());   // after the click that took the cursor away
+  };
+  box.append(area);
+}
+
+function editButton(key, wrap) {
+  return button("quiet tiny edit", icon("edit"), () => {
+    editing.add(key);
+    wrap.opened = key;    // the redraw puts the cursor there
+    wrap.draw();
+  }, t("edit"));
 }
 
 function messageBox(id, m, list, wrap) {
@@ -1125,37 +1193,41 @@ function messageBox(id, m, list, wrap) {
   const head = el("div", "who");
   const quote = quoteLine(m, list, wrap);
   if (mine) {
-    head.innerHTML = `${icon(m.kind === "idea" ? "idea" : m.kind === "comment" ? "reply" : "question")}<span>${esc(t("your." + m.kind))}</span>`
+    head.innerHTML = `${icon(m.kind === "idea" ? "idea" : m.kind === "question" ? "question" : m.kind === "note" ? "edit" : "reply")}<span>${esc(t("your." + m.kind))}</span>`
       + (m.kind === "idea" && m.status && m.status !== "new" ? `<span class="chip ${m.status}">${esc(t("idea." + m.status))}</span>` : "")
       + `<span class="at">${esc(when(m.at))}</span>`;
-    head.append(button("quiet tiny remove", icon("remove"), () => {
+    head.append(editButton(m.id, wrap), button("quiet tiny remove", icon("remove"), () => {
       list.splice(list.indexOf(m), 1);
+      editing.delete(m.id);
       change(id, { delete: true }, 0, m.id);
       wrap.draw();
     }, t("remove")));
     box.append(head);
     if (quote) box.append(quote);
-    const area = el("textarea", "note small");
-    area.rows = 1;
-    area.value = m.text;
-    area.placeholder = t("ph." + m.kind);
-    area.setAttribute("aria-label", t("your." + m.kind));
-    area.oninput = () => {
-      m.text = area.value;
-      autosize(area);
-      change(id, { kind: m.kind, text: m.text, ...(m.to ? { to: m.to } : {}) }, 600, m.id);
-    };
-    box.append(area);
+    editable(box, m.id, m.text, (text) => {
+      m.text = text;
+      change(id, { kind: m.kind, text, ...(m.to ? { to: m.to } : {}) }, 600, m.id);
+    });
   } else {
     head.innerHTML = `<span class="avatar">C</span><span>${esc(t("claude"))}</span><span class="at">${esc(when(m.at))}</span>`;
     box.append(head);
     if (quote) box.append(quote);
     box.append(el("div", "said", m.html || esc(m.text)));
     const tools = el("div", "tools");
-    tools.append(button("quiet tiny", `${icon("reply")}<span>${esc(t("reply"))}</span>`, () => addMessage(id, list, "comment", wrap, m.id)));
+    tools.append(button("quiet tiny", `${icon("reply")}<span>${esc(t("reply"))}</span>`, () => wrap.replyTo(m.id)));
     box.append(tools);
   }
   return box;
+}
+
+/** A verdict you picked: a small line on your side. */
+function markLine(m) {
+  const line = el("div", "mark-line");
+  if (m.id) line.dataset.mid = m.id;
+  line.innerHTML = m.verdict
+    ? `<span>${esc(t("picked"))}</span>${verdictChip(m.verdict, m.severity)}<span class="at">${esc(when(m.at))}</span>`
+    : `<span>${esc(t("took.back"))}</span><span class="at">${esc(when(m.at))}</span>`;
+  return line;
 }
 
 /** Claude's note when it sent the item back: what changed. */
@@ -1166,58 +1238,173 @@ function retestBox(e) {
   return box;
 }
 
-/** Your answer in an earlier round, as it was. */
-function pastBox(id, h) {
-  const box = el("div", "bubble you answer past");
-  box.innerHTML = `<div class="who"><span>${esc(t("your.answer"))}</span>${verdictChip(h.verdict, h.severity)}<span class="at">${esc(when(h.answered))}</span></div>`
-    + (h.note.trim() ? `<div class="said">${h.html}</div>` : "");
-  if (h.files.length) box.append(filesRow(id, h.files, true));
+/** A note from before notes were messages: the round's one note (this round's can still change). */
+function oldNoteBox(id, e, wrap) {
+  const h = e.h;
+  const box = el("div", "bubble you note");
+  const head = el("div", "who");
+  head.innerHTML = `${icon("edit")}<span>${esc(t("your.note"))}</span><span class="at">${esc(when(h.answered))}</span>`;
+  box.append(head);
+  if (e.past) {
+    box.append(el("div", "said mine", esc(h.note.trim())));
+    return box;
+  }
+  const key = `note:${id}`;
+  head.append(editButton(key, wrap), button("quiet tiny remove", icon("remove"), () => {
+    h.note = "";
+    editing.delete(key);
+    change(id, { note: "" });
+    wrap.draw();
+  }, t("remove")));
+  editable(box, key, h.note, (text) => {
+    h.note = text;
+    change(id, { note: text }, 600);
+  });
   return box;
 }
 
-/** Your answer in this round: the verdict as a chip, the note you type in, this round's files. */
-function answerBox(id, a, parts) {
-  const box = el("div", "bubble you answer");
-  box.innerHTML = `<div class="who"><span>${esc(t("your.answer"))}</span>${verdictChip(a.verdict, a.severity)}<span class="at">${esc(when(a.answered))}</span></div>`;
-  box.append(parts.note);
-  if (a.files.length) box.append(filesRow(id, a.files));
+/** A file you added, as a bubble of its own (this round's can be taken back). */
+function fileBox(id, e) {
+  const box = el("div", "bubble you file-bubble");
+  box.innerHTML = `<div class="who">${icon(e.f.kind === "recording" ? "record" : e.f.kind === "log" ? "log" : "attach")}`
+    + `<span>${esc(t("your.file"))}</span><span class="at">${esc(when(e.f.at))}</span></div>`;
+  box.append(filesRow(id, [e.f], e.past));
   return box;
 }
 
-function addMessage(id, list, kind, wrap, to) {
-  const m = { id: newId(), from: "you", kind, text: "", at: "" };
-  if (to) m.to = to;
-  if (kind === "idea") m.status = "new";
-  list.push(m);
-  change(id, { kind, text: "", ...(to ? { to } : {}) }, 600, m.id);
-  wrap.draw();
-  const area = wrap.querySelector(`[data-mid="${CSS.escape(m.id)}"] textarea`);
-  if (area) area.focus();
-}
-
-/** An item's conversation (`a` and `parts` are null for the round's own "Anything else?"). */
+/** An item's conversation (`a` and `parts` are null for the round's own "Anything else?"), with
+ *  the writing box under it. */
 function conversation(id, a, parts, list) {
   const wrap = el("div", "convo-wrap");
   const roundOfMessage = new Map();
   const roundNumber = (k) => (k < a.history.length ? a.history[k].round : a.retest ? a.retest.round : S.round.state.round);
+  const kinds = a ? ["note", "question", "idea"] : ["question", "idea"];
+  const draftKey = `${DRAFT}:${S.current}:${id}`;
+  const saved = stored(draftKey);
+  const draft = { text: saved.text || "", kind: kinds.includes(saved.kind) ? saved.kind : kinds[0], to: saved.to || null };
 
+  // -- the writing box
+  const composer = el("div", "composer");
+  const replying = el("div", "replying");
+  const area = el("textarea", "compose");
+  area.rows = 1;
+  area.value = draft.text;
+  area.setAttribute("aria-label", t("compose.ph"));
+  const kindRow = el("div", "kinds");
+  kindRow.setAttribute("role", "group");
+  const kindButtons = {};
+  for (const k of kinds) {
+    kindButtons[k] = button("", `${icon(k === "note" ? "edit" : k)}<span>${esc(t("add." + k))}</span>`, () => {
+      draft.kind = k;
+      keep();
+      refresh();
+      area.focus();
+    });
+    kindRow.append(kindButtons[k]);
+  }
+  const attach = button("quiet small-button", `${icon("attach")}<span>${esc(t("attach"))}</span>`, (e) => {
+    e.stopPropagation();
+    attachMenu(e.currentTarget, id);
+  });
+  const add = button("primary send", `<span>${esc(t("add"))}</span>${icon("send")}`, () => post(), t("add.hint"));
+  const row = el("div", "row");
+  row.append(kindRow, attach, el("span", "keys", esc(t("add.hint"))), add);
+  composer.append(replying, area, row);
+  // A click on the box's buttons leaves the cursor in the box (so the box stays open meanwhile).
+  composer.addEventListener("mousedown", (e) => { if (e.target.closest(".row button, .replying button")) e.preventDefault(); });
+  if (parts) parts.note = area;
+
+  function keep() {
+    try {
+      if (draft.text.trim() || draft.to || draft.kind !== kinds[0]) store(draftKey, draft);
+      else localStorage.removeItem(draftKey);
+    } catch {}
+  }
+  function refresh() {
+    for (const k of kinds) kindButtons[k].setAttribute("aria-pressed", String(draft.kind === k));
+    const target = draft.to && list.find((x) => x.id === draft.to);
+    replying.hidden = !target;
+    replying.replaceChildren();
+    if (target) {
+      replying.append(el("span", "what", `${icon("reply")}<span>${esc(t("replying", { what: quoteText(target) }))}</span>`),
+        button("quiet tiny remove", icon("remove"), () => {
+          draft.to = null;
+          keep();
+          refresh();
+        }, t("reply.drop")));
+    }
+    area.placeholder = draft.kind !== "note" ? t("ph." + draft.kind)
+      : target ? t("ph.comment")
+      : a && a.verdict && a.verdict !== "works" ? t(`note.${a.verdict}`)
+      : t("compose.ph");
+    add.disabled = !area.value.trim();
+    composer.classList.toggle("open", Boolean(area.value.trim() || target || draft.kind !== kinds[0]));
+  }
+  area.oninput = () => {
+    draft.text = area.value;
+    keep();
+    autosize(area);
+    add.disabled = !area.value.trim();
+    composer.classList.toggle("open", Boolean(area.value.trim() || draft.to || draft.kind !== kinds[0]));
+  };
+  area.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      post();
+    }
+  };
+
+  /** What is in the box goes into the conversation as a new bubble at the bottom. */
+  function post(focus = true) {
+    const text = area.value.trim();
+    if (!text) return false;
+    const kind = draft.kind === "note" && draft.to ? "comment" : draft.kind;
+    const m = { id: newId(), from: "you", kind, text, at: nowStamp() };
+    if (draft.to) m.to = draft.to;
+    if (kind === "idea") m.status = "new";
+    list.push(m);
+    change(id, { kind, text, ...(m.to ? { to: m.to } : {}) }, 0, m.id);
+    area.value = "";
+    Object.assign(draft, { text: "", to: null, kind: kinds[0] });
+    keep();
+    wrap.draw();
+    if (focus) area.focus();
+    return true;
+  }
+  wrap.post = () => post(false);
+  wrap.replyTo = (mid) => {
+    draft.to = mid;
+    if (draft.kind !== "question") draft.kind = kinds[0];
+    keep();
+    refresh();
+    area.focus();
+  };
+  wrap.writeNote = () => {
+    if (a) draft.kind = "note";
+    keep();
+    refresh();
+    area.focus();
+  };
+
+  // -- the conversation
   wrap.draw = () => {
-    const typing = a && parts.note === document.activeElement
-      ? { start: parts.note.selectionStart, end: parts.note.selectionEnd } : null;
+    const typing = document.activeElement === area ? { start: area.selectionStart, end: area.selectionEnd } : null;
+    if (!wrap.opened && wrap.contains(document.activeElement) && document.activeElement.dataset.edit) {
+      wrap.opened = document.activeElement.dataset.edit;    // a bubble you are changing keeps the cursor
+    }
     const last = a ? a.history.length : 0;
-    const showAnswer = a && (a.verdict || a.note.trim() || a.files.length || typing);
-    wrap.replaceChildren();
-    const entries = entriesOf(a, list).filter((e) => e.type !== "answer" || showAnswer);
+    const entries = entriesOf(a, list);
     let latest = -1;
     entries.forEach((e, n) => { if (e.type === "retest" || (e.type === "msg" && e.m.from === "claude")) latest = n; });
     const sizes = {};
     for (const e of entries) sizes[e.seg] = (sizes[e.seg] || 0) + 1;
 
+    wrap.replaceChildren();
     const convo = el("div", "convo");
     let seg = -1;
     let folded = false;
     entries.forEach((e, n) => {
-      if (e.type === "msg") roundOfMessage.set(e.m.id, e.seg);
+      if (e.m && e.m.id) roundOfMessage.set(e.m.id, e.seg);
       if (e.seg !== seg) {
         seg = e.seg;
         const key = `${id}:${seg}`;
@@ -1227,8 +1414,9 @@ function conversation(id, a, parts, list) {
       }
       if (folded) return;
       const box = e.type === "retest" ? retestBox(e)
-        : e.type === "past" ? pastBox(id, e.h)
-        : e.type === "answer" ? answerBox(id, a, parts)
+        : e.type === "mark" ? markLine(e.m)
+        : e.type === "oldnote" ? oldNoteBox(id, e, wrap)
+        : e.type === "file" ? fileBox(id, e)
         : messageBox(id, e.m, list, wrap);
       if (n === latest) {
         box.classList.add("latest");
@@ -1237,21 +1425,18 @@ function conversation(id, a, parts, list) {
       convo.append(box);
     });
     if (convo.children.length) wrap.append(convo);
-
-    const add = el("div", "add");
-    add.append(
-      button("quiet small-button", `${icon("question")}<span>${esc(t("add.question"))}</span>`, () => addMessage(id, list, "question", wrap)),
-      button("quiet small-button", `${icon("idea")}<span>${esc(t("add.idea"))}</span>`, () => addMessage(id, list, "idea", wrap)),
-      button("quiet small-button", `${icon("attach")}<span>${esc(t("attach"))}</span>`, (e) => {
-        e.stopPropagation();
-        attachMenu(e.currentTarget, id);
-      }),
-    );
-    wrap.append(add);
+    refresh();
+    wrap.append(composer);
     wrap.querySelectorAll("textarea").forEach(autosize);   // on the page already (a redraw); else renderMain does it
-    if (typing && parts.note.isConnected) {
-      parts.note.focus({ preventScroll: true });
-      parts.note.setSelectionRange(typing.start, typing.end);
+    if (typing && area.isConnected) {
+      area.focus({ preventScroll: true });
+      area.setSelectionRange(typing.start, typing.end);
+    }
+    const opened = wrap.opened && wrap.querySelector(`textarea[data-edit="${CSS.escape(wrap.opened)}"]`);
+    wrap.opened = null;
+    if (opened) {
+      opened.focus();
+      opened.setSelectionRange(opened.value.length, opened.value.length);
     }
   };
 
@@ -1290,6 +1475,11 @@ function conversation(id, a, parts, list) {
   return wrap;
 }
 
+/** Before a hand-back: what waits in a writing box goes in, so Claude gets it. */
+function postDrafts() {
+  for (const wrap of document.querySelectorAll("main .convo-wrap")) wrap.post();
+}
+
 // -- an item --------------------------------------------------------------------------------------
 
 function itemCard(b) {
@@ -1316,14 +1506,16 @@ function itemCard(b) {
   verdicts.setAttribute("role", "group");
   for (const v of VERDICTS) {
     parts.verdicts[v] = button(v, `${icon(v)}<span>${esc(t(v))}</span>`, () => {
+      const before = a.verdict;
       a.verdict = a.verdict === v ? "" : v;
       const fields = { verdict: a.verdict };
       if (a.verdict !== "change" && a.severity) fields.severity = a.severity = "";
       stampAnswer(a);
+      markLocally(a, before);
       change(b.id, fields);
       refreshCard(box, b);
       refreshTotals();
-      if (a.verdict && a.verdict !== "works") parts.note.focus();
+      if (a.verdict && a.verdict !== "works") box.convo.writeNote();
     });
     verdicts.append(parts.verdicts[v]);
   }
@@ -1334,6 +1526,7 @@ function itemCard(b) {
   for (const s of SEVERITIES) {
     parts.severities[s] = button(s, esc(t(s)), () => {
       a.severity = a.severity === s ? "" : s;
+      markLocally(a, a.verdict);
       change(b.id, { severity: a.severity });
       refreshCard(box, b);
       refreshTotals();
@@ -1342,18 +1535,7 @@ function itemCard(b) {
   }
   answer.append(parts.severity);
 
-  parts.note = el("textarea", "note");
-  parts.note.value = a.note;
-  parts.note.setAttribute("aria-label", `${t("note")} ${b.number}`);
-  parts.note.oninput = () => {
-    a.note = parts.note.value;
-    const was = a.answered;
-    stampAnswer(a);
-    if (Boolean(was) !== Boolean(a.answered)) box.convo.draw();   // the bubble came or went
-    autosize(parts.note);
-    change(b.id, { note: a.note }, 600);
-  };
-  box.convo = conversation(b.id, a, parts, a.messages);
+  box.convo = conversation(b.id, a, parts, a.messages);   // with the writing box (parts.note)
   answer.append(box.convo);
   body.append(answer);
 
@@ -1377,7 +1559,6 @@ function refreshCard(box, b) {
   for (const v of VERDICTS) parts.verdicts[v].setAttribute("aria-pressed", String(a.verdict === v));
   parts.severity.hidden = a.verdict !== "change" || isPlan();
   for (const s of SEVERITIES) parts.severities[s].setAttribute("aria-pressed", String(a.severity === s));
-  parts.note.placeholder = a.verdict ? t(`note.${a.verdict}`) : t("note");
   box.convo.draw();
 }
 
@@ -1409,6 +1590,7 @@ function renderMain({ keepPlace = false } = {}) {
   const keep = typing ? {
     id: focused.closest("[data-id]")?.dataset.id,
     mid: focused.closest("[data-mid]")?.dataset.mid,
+    compose: focused.classList.contains("compose"),
     start: focused.selectionStart,
     end: focused.selectionEnd,
   } : null;
@@ -1460,6 +1642,7 @@ function renderMain({ keepPlace = false } = {}) {
     const holder = card(keep.id);
     const again = keep.mid
       ? holder?.querySelector(`[data-mid="${CSS.escape(keep.mid)}"] textarea`)
+      : keep.compose ? holder?.querySelector("textarea.compose")
       : keep.id === "overall" ? area : holder?.parts?.note;
     if (again) {
       again.hidden = false;

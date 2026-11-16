@@ -452,7 +452,7 @@ class StoreTest(Temp):
         self.assertEqual((a["verdict"], a["note"]), ("", ""))
         self.assertEqual(a["history"][0]["note"], "slow")
         self.assertEqual(a["retest"]["round"], 2)
-        self.assertEqual(a["messages"], [])
+        self.assertEqual([m["kind"] for m in a["messages"]], ["mark"])     # the verdict you picked stays said
         self.assertIsNone(state["sent"])
         self.assertEqual(store.counts(state)["retest"], 1)
         self.rounds.set_item("sample", "open", {"verdict": "works"})
@@ -482,6 +482,40 @@ class StoreTest(Temp):
         self.assertEqual(a()["history"][0]["answered"], "2099-01-01 00:00")
         self.assertIsNone(a()["answered"])
         self.assertIsNone(store.blank({"md": "x", "done": True})["answered"])   # ticked in the checklist: no time
+
+    def test_verdict_lines_in_the_conversation(self):
+        thread = lambda: self.rounds.state("sample")["items"]["open"]["messages"]
+        lines = lambda: [(m["id"], m["verdict"], m["severity"]) for m in thread() if m["kind"] == "mark"]
+        self.rounds.set_item("sample", "open", {"verdict": "change"})
+        self.rounds.set_item("sample", "open", {"verdict": ""})                 # a first verdict taken back: gone
+        self.assertEqual(lines(), [])
+        with mock.patch.object(store, "now", return_value="2026-11-16 21:16"):
+            self.rounds.set_item("sample", "open", {"verdict": "change"})
+        self.assertEqual(lines(), [("v1", "change", "")])
+        self.assertEqual(thread()[0]["at"], "2026-11-16 21:16")
+        self.rounds.set_item("sample", "open", {"severity": "annoying"})        # belongs to the line
+        self.rounds.set_item("sample", "open", {"note": "x"})                   # no verdict change: no line
+        self.assertEqual(lines(), [("v1", "change", "annoying")])
+        with mock.patch.object(store, "now", return_value="2026-11-16 21:17"):
+            self.rounds.set_item("sample", "open", {"verdict": "partly"})       # right away: the same line
+        self.assertEqual(lines(), [("v1", "partly", "")])
+        self.assertEqual(thread()[0]["at"], "2026-11-16 21:17")
+        self.rounds.message("sample", "open", "note", "Opens the wrong round.", message_id="mn1")
+        self.rounds.set_item("sample", "open", {"verdict": "works"})            # after a note: a new line
+        self.assertEqual(lines(), [("v1", "partly", ""), ("v2", "works", "")])
+        self.rounds.set_item("sample", "open", {"verdict": ""})                 # taken back: said so
+        self.assertEqual(lines(), [("v1", "partly", ""), ("v2", "", "")])
+        self.rounds.set_item("sample", "open", {"verdict": "works"})            # and picked again right away
+        self.assertEqual(lines()[-1], ("v2", "works", ""))
+        self.rounds.send("sample")
+        self.rounds.retest("sample", ["open"], "Fixed.")
+        self.rounds.set_item("sample", "open", {"verdict": "works"})            # a re-test came between: new line
+        self.assertEqual([l[0] for l in lines()], ["v1", "v2", "v3"])
+        answers = (self.root / ".review" / "sample" / "answers.md").read_text()
+        self.assertIn("  - You, note mn1: Opens the wrong round.", answers)
+        self.assertNotIn("mark", answers)                                        # the verdict is in the item's line
+        with self.assertRaises(ValueError):                                      # lines come from verdicts only
+            self.rounds.message("sample", "open", "mark", "", message_id="mx")
 
     def test_messages(self):
         self.rounds.message("sample", "open", "question", "Why?", message_id="mabc")

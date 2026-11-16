@@ -130,6 +130,12 @@ Plan on the desk as `chat-thread-plan`, all agreed (fold rule too). Built on the
       bubble (opening a folded round); three rounds or more: all but the last two fold
 - [x] `answered` on an item's answer (first verdict, note or file in a round; kept in history)
 - [x] Test (`test_answered_time_places_your_answer`), a check round with screenshots
+- [x] After the check (2.1, 2.2 "needs change"), plan `chat-composer-plan`, all agreed: one writing
+      box at the bottom of every item (Note / Question / Idea, Attach, Add, Ctrl+Enter; slim until
+      used; text not added kept in the browser and added at hand-back); Reply through that box;
+      files as bubbles; your bubbles plain text with ✎ and ×; notes are messages (`note`);
+      a verdict you pick is a "You picked" line (`mark` messages, updated when you change your
+      mind right away, kept otherwise); "Copy summary" takes the notes
 
 **Review:** 73 tests pass. Tried on a scratch desk in the browser pane: order, folding, quote
 jump and flash, Latest mark moving on a live `reply`, idea status live, typing and deleting

@@ -16,7 +16,7 @@ from .project import read_json, write_json
 
 VERDICTS = ("works", "partly", "change", "blocked", "skipped")
 SEVERITIES = ("cosmetic", "annoying", "broken")
-KINDS = ("question", "idea", "reply", "comment")
+KINDS = ("note", "question", "idea", "reply", "comment")
 IDEA_STATES = ("new", "planned", "done", "declined")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MESSAGE_ID = re.compile(r"^[a-z][a-z0-9]{0,31}$")
@@ -142,6 +142,7 @@ class Rounds:
 
         def change(doc, state):
             a = item(state, item_id)
+            before = a["verdict"]
             if "verdict" in fields:
                 if fields["verdict"] not in (*VERDICTS, ""):
                     raise ValueError(f"a verdict is one of {', '.join(VERDICTS)} or none")
@@ -152,6 +153,7 @@ class Rounds:
                 if fields["severity"] not in (*SEVERITIES, ""):
                     raise ValueError(f"a severity is one of {', '.join(SEVERITIES)} or none")
                 a["severity"] = fields["severity"]
+            mark(a, before)
             if "note" in fields:
                 a["note"] = text(fields["note"])
             answered(a)
@@ -311,6 +313,31 @@ def blank(it, saved=None):
     if saved:
         a.update({k: saved[k] for k in a if k in saved and k != "text"})
     return a
+
+
+def mark(a, before):
+    """A verdict you pick shows in the item's conversation as a line of its own ("You picked:
+    Partly"), at the time you picked it. Changing your mind right away (nothing said since)
+    changes that line instead of adding one; taking a first verdict back right away removes it.
+    A severity belongs to the latest line."""
+    thread = a["messages"]
+    last = thread[-1] if thread else None
+    fresh = bool(last) and last.get("kind") == "mark" and not (a["retest"] and a["retest"]["at"] >= last["at"])
+    if a["verdict"] == before:
+        lines = [m for m in thread if m.get("kind") == "mark"]
+        if lines and lines[-1].get("severity", "") != a["severity"]:
+            lines[-1]["severity"] = a["severity"]
+        return
+    if fresh and not a["verdict"] and not last.get("prev"):
+        thread.remove(last)
+    elif fresh:
+        last.update(verdict=a["verdict"], severity=a["severity"], at=now())
+    else:
+        line = {"id": next_id(thread, "v"), "from": "you", "kind": "mark", "text": "",
+                "verdict": a["verdict"], "severity": a["severity"], "at": now()}
+        if before:
+            line["prev"] = before    # what it was before this line (none: a first verdict)
+        thread.append(line)
 
 
 def answered(a):

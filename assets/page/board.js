@@ -434,7 +434,9 @@ function summaryText() {
     out.push(`**${t(v)}**`);
     for (const it of these) {
       const a = state.items[it.id];
-      const note = a.note.trim().replace(/\s*\n\s*/g, " ");
+      const since = (a.retest && a.retest.at) || "";   // this round's notes: the old one, and those added
+      const notes = [a.note, ...a.messages.filter((m) => m.from !== "claude" && ["note", "comment"].includes(m.kind) && m.at >= since).map((m) => m.text)];
+      const note = notes.map((n) => n.trim().replace(/\s*\n\s*/g, " ")).filter(Boolean).join(" · ");
       out.push(`- ${it.number} ${plain(it.md)}${a.severity ? ` (${t(a.severity)})` : ""}${note ? ` · ${note}` : ""}`);
     }
     out.push("");

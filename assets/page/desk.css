@@ -280,7 +280,6 @@ button.round-line svg.icon { width: 13px; height: 13px; margin-left: -4px; }
 .bubble .tools { margin-top: 2px; display: flex; justify-content: flex-end; }
 .bubble textarea.note { margin-top: 4px; }
 .bubble .files { margin-top: 6px; }
-.item.v-change .bubble.answer:not(.past) textarea.note { border-color: color-mix(in srgb, var(--change) 50%, var(--border)); }
 button.quote {
   display: flex; gap: 5px; align-items: center; width: 100%; margin-top: 4px; padding: 1px 8px;
   border: 0; border-left: 2px solid color-mix(in srgb, var(--dim) 50%, transparent); border-radius: 0 6px 6px 0;
@@ -290,6 +289,29 @@ button.quote span { overflow: hidden; text-overflow: ellipsis; white-space: nowr
 button.quote:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .chip.latest { background: var(--accent); color: var(--accent-ink); }
 .chip.verdict { color: var(--bg); }
+.bubble .said.mine { white-space: pre-wrap; }
+.bubble .who .edit { margin-left: 2px; }
+.bubble.file-bubble .files { margin-top: 4px; }
+.mark-line { align-self: flex-end; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: flex-end; font-size: 12px; color: var(--faint); padding: 0 4px; }
+.mark-line .at { color: var(--faint); }
+.composer { margin-top: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--raised); padding: 6px 8px 8px; transition: border-color 0.12s; }
+.composer:focus-within { border-color: var(--accent); }
+.composer .replying { display: flex; align-items: center; gap: 6px; padding: 2px 4px 4px; font-size: 12.5px; color: var(--dim); }
+.composer .replying .what { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; }
+.composer .replying .what span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.composer textarea.compose { width: 100%; min-height: 30px; resize: none; border: 0; background: transparent; padding: 4px 6px; color: var(--text); outline: none; }
+/* slim until you click into it or it holds something; then the kinds, Attach and Add show */
+.composer:not(:focus-within):not(.open) .row { display: none; }
+.composer:not(:focus-within):not(.open) { padding-bottom: 6px; }
+.composer .row { position: relative; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.composer .kinds { display: inline-flex; border: 1px solid var(--border); border-radius: 99px; overflow: hidden; }
+.composer .kinds button { border: 0; border-radius: 0; background: transparent; color: var(--dim); font-size: 12.5px; padding: 3px 10px; display: inline-flex; align-items: center; gap: 5px; }
+.composer .kinds button svg.icon { width: 13px; height: 13px; }
+.composer .kinds button:hover { color: var(--text); }
+.composer .kinds button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.composer .keys { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+.composer .send { font-size: 13px; padding: 4px 12px; display: inline-flex; align-items: center; gap: 6px; }
+@media (hover: none) { .composer .keys { display: none; } .composer .send { margin-left: auto; } }
 .bubble.flash { animation: flash 1.4s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 4px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
 .chip { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 99px; background: var(--control); color: var(--dim); }
