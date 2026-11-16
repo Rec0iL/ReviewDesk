@@ -55,6 +55,10 @@ echo hello
 """
 
 
+def proj_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def git_repo(folder):
     subprocess.run(["git", "init", "-q", str(folder)], check=True)
     return folder
@@ -1075,6 +1079,22 @@ class PeersTest(Temp):
         other = c if lead is a else a
         self.assertIsNotNone(self.peer_event(pages[lead]))
         self.assertIsNone(self.peer_event(pages[other], 1.5))
+
+    def test_the_bells_list_has_every_desks_notifications(self):
+        a, b = self.desk("alpha", "Alpha"), self.desk("beta", "Beta")
+        self.watch(a)
+        self.assertTrue(self.until(lambda: len(a.desks()) == 2))
+        self.reply(a, "Here first.")
+        time.sleep(0.02)
+        self.reply(b, "Then there.")
+        idle_since = b.last_seen
+        got = a.all_history()
+        self.assertEqual([(e["title"], e["what"], e["notify"]["body"]) for e in got],
+                         [("Beta", "reply", "Then there."), ("Alpha", "reply", "Here first.")])
+        self.assertEqual((got[0]["url"], got[0]["slug"], got[0]["item"]), (b.url, "sample", "open"))
+        self.assertEqual(b.last_seen, idle_since)                      # asking keeps nobody alive
+        # kept on disk: a restarted desk still has it
+        self.assertEqual(len(proj_json(b.folder / ".notices.json")), 1)
 
     def test_asking_another_desk_doesnt_keep_it_alive(self):
         b = self.desk("beta", "Beta")

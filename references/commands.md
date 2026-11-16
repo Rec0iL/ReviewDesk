@@ -61,7 +61,10 @@ others what waits there and shows them in the page's **Desks** list:
 
 A desk with no tab of its own chimes and notifies through the open tab (exactly one: the desk
 with the lowest port among those with a page); clicking that notification opens the desk at the
-item. Asking another desk doesn't keep it alive. The phone shows no Desks list.
+item. The bell at the top right of the page lists the last notifications of every running desk
+(each desk keeps its last 100 in `.review/.notices.json`), newest first; a number on it counts the
+ones since you last opened it. Asking another desk doesn't keep it alive. The phone shows no Desks
+list, and its bell only its own desk's.
 
 ## Files
 
@@ -72,6 +75,7 @@ item. Asking another desk doesn't keep it alive. The phone shows no Desks list.
 - `.review/<round>/state.json`: the answers as data (the desk's; don't edit it).
 - `.review/questions.json`, `events.jsonl`: question cards and what happened.
 - `.review/.seen.json`: which of your replies a page has shown the user (the rest count as new).
+- `.review/.notices.json`: the last 100 notifications, for the bell.
 - `.review/desk.json`: the title and accent. `.review/.desk.log`: the desk's log.
 
 ## Ideas that belong to no review

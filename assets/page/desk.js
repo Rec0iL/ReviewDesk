@@ -69,6 +69,7 @@ const S = {
   questions: [],        // Claude's question sets waiting for answers (of the session shown)
   allQuestions: [],     // ... of every session
   desks: [],            // every running desk, this one first (the Desks list)
+  history: [],          // what Claude did lately on every desk (the bell)
   session: keptSession(), // the session the sidebar shows (null: all)
   jump: null,           // the tally's last jump: {v, id} (the item it went to)
   hidden: [],           // items the browser doesn't show (an extension hid or removed their cards)
@@ -278,6 +279,7 @@ function connect() {
 
 async function onEvent(event) {
   if (event.client === CLIENT) return; // our own change coming back
+  if (event.notify || event.type === "peer") loadHistory();
   if (event.type === "peer") return announcePeer(event);
   if (event.type === "desks") return loadDesks();
   if (event.type === "seen") return loadState();
@@ -376,6 +378,7 @@ function faviconData() {
 }
 
 async function goTo(slug, item) {
+  if (!shownRounds().some((r) => r.slug === slug)) await setSession(null); // another session's round: show all
   if (slug !== S.current || S.view !== "round") {
     if (item) remember({ round: slug, item });
     await openRound(slug);
@@ -890,12 +893,14 @@ function renderHead(head) {
           </div>
           <span class="listening ${listening ? "on" : ""}" title="${esc(listening ? t("listening.tip") : t("not.listening.tip"))}">${esc(many > 1 ? t("listening.many", { n: many }) : listening ? t("listening") : t("not.listening"))}</span>
         </div>
+        <span class="bell-slot"></span>
       </div>
     </div>
     <div class="bar" aria-hidden="true">${bar}</div>
     <div class="status"><div class="tally">${tally}</div><span class="saved"></span>
       <button type="button" class="link copy-summary">${icon("copy")}<span>${esc(t("summary.copy"))}</span></button></div>`
     + (S.hidden.length ? `<div class="hidden-note" role="alert">${icon("blocked")}<span><b>${esc(t(S.hidden.length === 1 ? "hidden.one" : "hidden.many", { n: S.hidden.length, list: S.hidden.join(", ") }))}</b> ${esc(t("hidden.why"))}</span></div>` : "");
+  $(".bell-slot", head).replaceWith(bellButton());
   $(".copy-summary", head).onclick = copySummary;
   head.querySelectorAll(".jump").forEach((b) => (b.onclick = () => jumpTo(b.dataset.v)));
   const hand = $(".hand", head);
@@ -1376,6 +1381,7 @@ window.addEventListener("scroll", onScroll, { passive: true });
     await openRound(slugs.includes(last.round) ? last.round : slugs[0]);
     if (last.view === "ideas") await showIdeas();
     await loadQuestions();
+    loadHistory();
   } catch {
     toast(t("offline"));
     renderMain();

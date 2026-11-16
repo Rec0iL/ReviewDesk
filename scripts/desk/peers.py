@@ -89,6 +89,23 @@ def ask(rt, since, watching, timeout=None):
         conn.close()
 
 
+def history(rt):
+    """Another desk's list of what Claude did there (for the bell)."""
+    conn = http.client.HTTPConnection("127.0.0.1", rt["port"], timeout=3)
+    try:
+        conn.request("GET", "/api/history?own=1",
+                     headers={"Host": f"127.0.0.1:{rt['port']}", "X-Desk-Token": rt.get("token", "")})
+        r = conn.getresponse()
+        data = r.read()
+        if r.status != 200:
+            raise OSError(f"{r.status} {r.reason}")
+        return json.loads(data)["history"]
+    except http.client.HTTPException as e:
+        raise OSError(str(e))
+    finally:
+        conn.close()
+
+
 class Peers:
     """The other running desks, as this desk sees them, kept up to date in the background."""
 

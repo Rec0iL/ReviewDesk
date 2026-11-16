@@ -61,7 +61,8 @@ function renderIdeas() {
   const counts = { all: S.ideas.length };
   for (const s of IDEA_STATES) counts[s] = S.ideas.filter((i) => i.status === s).length;
   head.innerHTML = `<div class="row"><div class="titles"><h1>${esc(t("ideas"))}</h1>
-    <div class="meta"><span>${esc(t("ideas.about"))}</span></div></div></div>`;
+    <div class="meta"><span>${esc(t("ideas.about"))}</span></div></div><div class="actions"></div></div>`;
+  $(".actions", head).append(bellButton());
   const chips = el("div", "filters");
   for (const f of ["all", ...IDEA_STATES]) {
     const b = button("chip-button", `${esc(t(f === "all" ? "ideas.all" : "idea." + f))}<b>${counts[f]}</b>`, () => {

@@ -492,6 +492,32 @@ dialog.phone { width: min(440px, calc(100vw - 32px)); }
 }
 .toast.shown { opacity: 1; transform: translate(-50%, 0); }
 .toast.shown.link { pointer-events: auto; cursor: pointer; }
+
+/* -- the bell at the top right and its list ---------------------------------------------------- */
+.history-bell { position: relative; align-self: flex-start; }
+.history-bell .badge {
+  position: absolute; top: -4px; right: -6px; font-size: 10.5px; font-weight: 600; line-height: 1.4;
+  padding: 0 5px; border-radius: 99px; background: var(--accent); color: var(--accent-ink);
+}
+.history-pop {
+  position: fixed; top: 62px; right: 16px; z-index: 8; width: min(400px, calc(100vw - 32px)); max-height: 70vh;
+  overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 12px 8px 8px;
+}
+.history-pop h2 { margin: 0 8px 8px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.history-pop .empty { color: var(--dim); margin: 6px 8px 10px; font-size: 13.5px; }
+.history-pop ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.history-pop .entry {
+  width: 100%; display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 8px;
+  border-radius: 9px; border-color: transparent; background: transparent;
+}
+.history-pop .entry:hover { background: var(--raised); border-color: var(--border); }
+.history-pop .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; margin-top: 5px; }
+.history-pop .words { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.history-pop .top { font-size: 13.5px; display: flex; gap: 4px; align-items: baseline; }
+.history-pop .top b { font-weight: 600; }
+.history-pop time { margin-left: auto; color: var(--faint); font-size: 12px; white-space: nowrap; padding-left: 8px; }
+.history-pop .body { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .toast.link::after { content: " →"; color: var(--accent-text); }
 
 /* -- narrow screens: the rounds above, as a strip ---------------------------------------- */

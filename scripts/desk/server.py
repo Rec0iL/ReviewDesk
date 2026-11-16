@@ -88,6 +88,9 @@ class Desk:
         self.watched_until = 0.0
         self.cached = (-1, None)
         self.peers = peers.Peers(self)
+        # what Claude did, for the bell's list (`.notices.json`, the last 100)
+        self.history_path = self.folder / ".notices.json"
+        self.history = collections.deque(proj.read_json(self.history_path, []) or [], maxlen=100)
         self.say = (lambda _: None) if quiet else (lambda text: print(text, flush=True))
 
     # -- live updates ------------------------------------------------------------------------
@@ -108,10 +111,34 @@ class Desk:
         with self.serial_changed:
             self.serial += 1
             if note:
-                self.notices.append((self.serial, {
-                    "kind": event.get("type"), "what": event.get("what"), "slug": event.get("slug"),
-                    "item": event.get("item"), "notify": note}))
+                entry = {"kind": event.get("type"), "what": event.get("what"), "slug": event.get("slug"),
+                         "item": event.get("item"), "notify": note}
+                self.notices.append((self.serial, entry))
+                self.history.append(entry | {"at": time.time()})
+                try:
+                    proj.write_json(self.history_path, list(self.history))
+                except OSError:
+                    pass
             self.serial_changed.notify_all()
+
+    def own_history(self):
+        """What Claude did on this desk, newest first, each with the desk it happened on."""
+        settings = proj.settings(self.root)
+        me = {"project": str(self.root), "title": settings["title"], "accent": settings["accent"], "url": self.url}
+        return [e | me for e in reversed(self.history)]
+
+    def all_history(self, limit=60):
+        """The bell's list: this desk's and every other running desk's, newest first."""
+        out = self.own_history()
+        for path in self.peers.all():
+            rt = proj.runtime(path)
+            if not rt:
+                continue
+            try:
+                out += peers.history(rt)
+            except (OSError, ValueError):
+                continue
+        return sorted(out, key=lambda e: e.get("at", 0), reverse=True)[:limit]
 
     def connected(self):
         with self.clients_lock:
@@ -458,7 +485,7 @@ def handler_for(desk, server_ref, on_phone=False):
         # -- GET -----------------------------------------------------------------------------
 
         def do_GET(self):
-            if not self.path.startswith("/api/peer?"):
+            if not self.path.startswith(("/api/peer?", "/api/history?own=1")):
                 desk.last_seen = time.time()     # another desk asking keeps none alive
             if not self.ours():
                 return self.reply(403, "not here", "text/plain")
@@ -521,6 +548,9 @@ def handler_for(desk, server_ref, on_phone=False):
                     since = int(query.get("since", ["-1"])[0])
                     timeout = min(max(float(query.get("timeout", [peers.POLL])[0]), 0), 60)
                     return self.send_json(200, desk.peer(since, timeout, query.get("watching", ["0"])[0] == "1"))
+                if path == "/api/history":
+                    own = on_phone or query.get("own", [""])[0] == "1"
+                    return self.send_json(200, {"history": desk.own_history() if own else desk.all_history()})
                 if path == "/api/desks" and not on_phone:
                     return self.send_json(200, {"desks": desk.desks()})
                 if path == "/api/wait":

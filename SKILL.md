@@ -187,4 +187,4 @@ and `start`.
   network, its own secret, closed after eight hours). The phone answers and takes photos but never
   runs commands. Only the user turns it on; never do it for them.
 - Desktop notifications and a chime tell the user when you replied, re-tested or asked, even with
-  the page in the background.
+  the page in the background. The bell at the top right lists what you did lately on every desk.

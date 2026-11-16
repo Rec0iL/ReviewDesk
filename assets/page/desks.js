@@ -180,3 +180,113 @@ function markSeen() {
 }
 
 document.addEventListener("visibilitychange", markSeen);
+
+// -- the bell at the top right: what Claude did lately, on every desk -----------------------------
+
+const HISTORY_SEEN = "review-desk:history-seen";
+
+let historyTimer;
+function loadHistory() {
+  clearTimeout(historyTimer);
+  historyTimer = setTimeout(async () => {
+    try {
+      S.history = (await api("/api/history")).history;
+    } catch {
+      return;
+    }
+    renderBell();
+    if (document.querySelector(".history-pop")) renderHistory();
+  }, 200);
+}
+
+function historySeen() {
+  return Number(stored(HISTORY_SEEN).at) || 0;
+}
+
+/** The bell's button, for a page's header. */
+function bellButton() {
+  const b = button("icon-button history-bell", "", toggleHistory);
+  b.setAttribute("aria-haspopup", "dialog");
+  fillBell(b);
+  return b;
+}
+
+function fillBell(b) {
+  const fresh = (S.history || []).filter((e) => e.at > historySeen()).length;
+  b.innerHTML = icon("bell") + (fresh ? `<span class="badge">${fresh > 99 ? "99+" : fresh}</span>` : "");
+  b.title = t("history.title");
+  b.setAttribute("aria-label", fresh ? `${t("history.title")} (${fresh})` : t("history.title"));
+  b.setAttribute("aria-expanded", String(Boolean(document.querySelector(".history-pop"))));
+}
+
+function renderBell() {
+  document.querySelectorAll(".history-bell").forEach(fillBell);
+}
+
+function toggleHistory() {
+  const open = document.querySelector(".history-pop");
+  if (open) return closeHistory();
+  const pop = el("div", "history-pop");
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", t("history.title"));
+  document.body.append(pop);
+  renderHistory();
+  // what you see now counts as seen (the newest entry's time, so clocks needn't agree)
+  const newest = Math.max(historySeen(), ...(S.history || []).map((e) => e.at || 0));
+  store(HISTORY_SEEN, { at: newest });
+  renderBell();
+  setTimeout(() => document.addEventListener("pointerdown", outside), 0);
+  loadHistory();
+}
+
+function outside(e) {
+  if (!e.target.closest(".history-pop, .history-bell")) closeHistory();
+}
+
+function closeHistory() {
+  document.querySelector(".history-pop")?.remove();
+  document.removeEventListener("pointerdown", outside);
+  renderBell();
+}
+
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.querySelector(".history-pop")) closeHistory();
+});
+
+function renderHistory() {
+  const pop = document.querySelector(".history-pop");
+  if (!pop) return;
+  const list = S.history || [];
+  pop.replaceChildren(el("h2", null, esc(t("history.title"))));
+  if (!list.length) {
+    pop.append(el("p", "empty", esc(t("history.none"))));
+    return;
+  }
+  const here = (S.state && S.state.project && S.state.project.path) || "";
+  const ul = el("ul");
+  for (const e of list) {
+    const note = e.notify || {};
+    const what = t(`notify.${e.what}`) || note.title || "";
+    const when = new Date((e.at || 0) * 1000);
+    const day = when.toDateString() === new Date().toDateString()
+      ? when.toLocaleTimeString(S.lang, { hour: "2-digit", minute: "2-digit" })
+      : when.toLocaleString(S.lang, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    const round = e.slug && e.project === here ? ((S.state.rounds.find((r) => r.slug === e.slug) || {}).title || e.slug) : "";
+    const body = e.what === "reply" || e.what === "new" || e.what === "ask" ? note.body : round || note.body;
+    const row = button("entry",
+      `<span class="swatch" style="background:${esc(e.accent || "")}"></span>`
+      + `<span class="words"><span class="top"><b>${esc(e.title)}</b> · ${esc(what)}<time>${esc(day)}</time></span>`
+      + (body ? `<span class="body">${esc(body)}</span>` : "") + `</span>`,
+      () => {
+        closeHistory();
+        if (e.project !== here) return goDesk(e.url, e.slug, e.item);
+        if (e.what === "ask") return openAsk();
+        if (e.kind === "ideas") return showIdeas();
+        if (e.slug) goTo(e.slug, e.item).catch((err) => toast(err.message));
+      });
+    const li = el("li");
+    li.append(row);
+    ul.append(li);
+  }
+  pop.append(ul);
+}
