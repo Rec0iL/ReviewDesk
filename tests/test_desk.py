@@ -181,12 +181,38 @@ class ProjectTest(Temp):
             if kept is not None:
                 os.environ["REVIEW_DESK_AS"] = kept
 
+    def test_a_worktrees_review_folder_is_the_main_checkouts(self):
+        # Claude's file tools in a worktree session may write only inside the worktree: its
+        # `.review/` leads to the main checkout's, where the desk looks, and git leaves it alone.
+        main = git_repo(self.root / "main")
+        run = lambda *a: subprocess.run(["git", "-C", str(main), *a], check=True, capture_output=True)
+        run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "start")
+        run("worktree", "add", "-q", str(self.root / "side-task"))
+        side = self.root / "side-task"
+        out = subprocess.run([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "status"], cwd=side,
+                             capture_output=True, text=True, timeout=30, env={k: v for k, v in os.environ.items() if k != "REVIEW_DESK_AS"})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue((side / ".review").is_symlink())
+        self.assertEqual((side / ".review").resolve(), (main / ".review").resolve())
+        write_round(side, "from-side")
+        self.assertTrue((main / ".review" / "from-side" / "checklist.md").is_file())
+        for repo in (side, main):
+            status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True)
+            self.assertEqual(status.stdout.strip(), "", repo)
+        # a `.review/` the worktree already has of its own stays as it is
+        other = self.root / "other-task"
+        run("worktree", "add", "-q", str(other))
+        (other / ".review").mkdir()
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "review_desk.py"), "status"], cwd=other,
+                       capture_output=True, text=True, timeout=30)
+        self.assertFalse((other / ".review").is_symlink())
+
     def test_exclude_once(self):
         git_repo(self.root)
         project.ensure(self.root)
         project.ensure(self.root)
         exclude = (self.root / ".git" / "info" / "exclude").read_text()
-        self.assertEqual(exclude.count("/.review/"), 1)
+        self.assertEqual(exclude.splitlines().count("/.review"), 1)
         (self.root / ".review" / "x.md").write_text("x")
         status = subprocess.run(["git", "-C", str(self.root), "status", "--porcelain"], capture_output=True, text=True)
         self.assertEqual(status.stdout.strip(), "")

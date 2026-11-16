@@ -433,6 +433,9 @@ def main(argv=None):
     except ValueError as e:
         sys.exit(f"review-desk: {e}")
 
+    if args.command != "serve":
+        proj.link_worktree(root)
+
     if args.command == "start":
         start(root, open_browser=not args.no_open)
     elif args.command == "stop":

@@ -12,7 +12,7 @@ import zlib
 from pathlib import Path
 
 REVIEW = ".review"
-EXCLUDE = "/.review/"
+EXCLUDE = "/.review"     # the folder, and in a worktree the link to the main checkout's
 FIRST_PORT, PORTS = 41000, 900
 DEFAULT_ACCENT = "#55d6ad"
 COLOUR = re.compile(r"^#(?:[0-9a-fA-F]{3}){1,2}$")
@@ -78,12 +78,33 @@ def ensure(root):
         path = Path(exclude) if Path(exclude).is_absolute() else Path(root) / exclude
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        if EXCLUDE not in (line.strip() for line in lines):
+        kept = {line.strip() for line in lines}
+        if EXCLUDE not in kept:
             with open(path, "a", encoding="utf-8") as f:
                 if lines and lines[-1].strip():
                     f.write("\n")
-                f.write(f"# Review Desk's reviews\n{EXCLUDE}\n")
+                if EXCLUDE + "/" not in kept:     # older desks wrote only the folder: `/.review/`
+                    f.write("# Review Desk's reviews\n")
+                f.write(f"{EXCLUDE}\n")
     return folder
+
+
+def link_worktree(root, start=None):
+    """In a linked git worktree of `root`: its `.review` becomes a link to the main checkout's,
+    so Claude's file tools, which may write only inside the worktree, put rounds where the desk
+    looks. A `.review` the worktree already has stays as it is. Returns the link, or None."""
+    top = git(Path(start or os.getcwd()).resolve(), "rev-parse", "--show-toplevel")
+    if not top or main_checkout(Path(top).resolve()) != Path(root).resolve():
+        return None
+    link = Path(top) / REVIEW
+    if link.is_symlink() or link.exists():
+        return link if link.is_symlink() else None
+    target = ensure(root)
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        return None
+    return link
 
 
 def stable_port(root):
