@@ -140,7 +140,7 @@ function withoutItem(name, id) {
   return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
-function filesRow(id, files) {
+function filesRow(id, files, fixed = false) {
   const row = el("div", "files");
   for (const f of files) {
     const chip = el("div", `file ${f.kind}`);
@@ -149,8 +149,8 @@ function filesRow(id, files) {
       ? `<img src="${fileUrl(f.name)}" alt="" loading="lazy">`
       : `<span class="glyph">${icon(FILE_ICON[f.kind] || "file")}</span>`;
     const words = f.label || (f.kind === "file" ? withoutItem(f.name, id) : t("kind." + f.kind));
-    chip.append(open, el("span", "label", esc(words)),
-      button("quiet tiny remove", icon("remove"), () => removeFile(id, f.name), t("remove.file")));
+    chip.append(open, el("span", "label", esc(words)));
+    if (!fixed) chip.append(button("quiet tiny remove", icon("remove"), () => removeFile(id, f.name), t("remove.file")));
     row.append(chip);
   }
   return row;

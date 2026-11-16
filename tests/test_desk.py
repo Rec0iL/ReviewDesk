@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 # Desks the tests start never show desktop notifications, and list themselves in a folder of
@@ -459,6 +460,28 @@ class StoreTest(Temp):
         a = self.rounds.state("sample")["items"]["open"]
         self.assertEqual(a["history"][1]["retest"]["note"], "Faster now.")
         self.assertEqual(a["retest"]["note"], "Faster still.")
+
+    def test_answered_time_places_your_answer(self):
+        a = lambda: self.rounds.state("sample")["items"]["open"]
+        self.assertIsNone(a()["answered"])
+        self.rounds.set_item("sample", "open", {"verdict": "partly"})
+        first = a()["answered"]
+        self.assertRegex(first, r"^\d{4}-\d\d-\d\d \d\d:\d\d$")
+        with mock.patch.object(store, "now", return_value="2099-01-01 00:00"):
+            self.rounds.set_item("sample", "open", {"note": "a bit slow"})    # set once, not moved by edits
+            self.assertEqual(a()["answered"], first)
+            self.rounds.set_item("sample", "open", {"verdict": "", "note": "  "})   # all of it emptied: gone
+            self.assertIsNone(a()["answered"])
+            self.rounds.add_file("sample", "open", "shot.png", "screenshot")       # a file alone answers too
+            self.assertEqual(a()["answered"], "2099-01-01 00:00")
+            self.rounds.remove_file("sample", "open", "shot.png")
+            self.assertIsNone(a()["answered"])
+            self.rounds.add_file("sample", "overall", "x.png", "screenshot")       # the round's own: no item
+            self.rounds.set_item("sample", "open", {"verdict": "change", "note": "slow"})
+        self.rounds.retest("sample", ["open"], "Faster now.")
+        self.assertEqual(a()["history"][0]["answered"], "2099-01-01 00:00")
+        self.assertIsNone(a()["answered"])
+        self.assertIsNone(store.blank({"md": "x", "done": True})["answered"])   # ticked in the checklist: no time
 
     def test_messages(self):
         self.rounds.message("sample", "open", "question", "Why?", message_id="mabc")

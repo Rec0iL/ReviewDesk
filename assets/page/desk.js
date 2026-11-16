@@ -39,6 +39,8 @@ const ICONS = {
   box: '<rect x="4.5" y="6" width="15" height="12" rx="1"/>',
   blur: '<path d="M4 4h4v4H4zM12 4h4v4h-4zM8 8h4v4H8zM16 8h4v4h-4zM4 12h4v4H4zM12 12h4v4h-4zM8 16h4v4H8zM16 16h4v4h-4z" fill="currentColor" stroke="none"/>',
   undo: '<path d="M8.5 8.5H15a4.5 4.5 0 0 1 0 9h-5"/><path d="M11.5 5L8 8.5l3.5 3.5"/>',
+  down: '<path d="M7 10l5 5 5-5"/>',
+  up: '<path d="M7 14l5-5 5 5"/>',
   hourglass: '<path d="M7 3.5h10M7 20.5h10"/><path d="M8 3.5c0 4.5 8 4.5 8 8.5s-8 4-8 8.5M16 3.5c0 4.5-8 4.5-8 8.5s8 4 8 8.5"/>',
 };
 const LAST = "review-desk:last";
@@ -1043,27 +1045,98 @@ function autosize(area) {
   area.style.height = `${Math.max(least, area.scrollHeight + 2)}px`;
 }
 
-// -- threads: your questions, ideas and replies, Claude's answers --------------------------------
+// -- the conversation: your answers, questions and ideas, Claude's replies and re-test notes ------
+//
+// One column in time order, oldest at the top: yours on the right, Claude's on the left, a thin
+// line where Claude sent the item back for another look. Claude's newest bubble is marked.
+
+const unfolded = new Set();   // older rounds you opened ("item:round"), while the page is open
 
 function newId() {
   return `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function messageBox(id, m, list, redraw) {
+/** Now, written the way the desk writes times ("2026-11-16 21:05"). */
+function nowStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** As the desk does it: when you first answered the item in this round (verdict, note or file). */
+function stampAnswer(a) {
+  a.answered = a.verdict || a.note.trim() || a.files.length ? a.answered || nowStamp() : null;
+}
+
+/** A bubble's time: the clock today, with the day before that. */
+function when(at) {
+  if (!at) return "";
+  if (at.slice(0, 10) === nowStamp().slice(0, 10)) return clock(at);
+  const day = new Date(at.slice(0, 10) + "T12:00").toLocaleDateString(S.lang, { day: "numeric", month: "short" });
+  return `${day} ${clock(at)}`;
+}
+
+function verdictChip(v, severity) {
+  if (!v) return "";
+  return `<span class="chip verdict" style="background:${colour(v)}">${esc(t(v))}${severity && !isPlan() ? ` · ${esc(t(severity))}` : ""}</span>`;
+}
+
+/** The order of an item's conversation. Each re-test starts a round; a message belongs to the
+ *  round whose re-test came before it. In a round: Claude's note on what changed, then your
+ *  answer and the messages by time (an answer from before answers had a time: at the start). */
+function entriesOf(a, list) {
+  const history = a ? a.history : [];
+  const last = history.length;
+  const openers = a ? [...history.map((h) => h.retest), a.retest] : [null];
+  const roundOf = (at) => {
+    if (!at) return last;
+    let k = 0;
+    openers.forEach((r, i) => { if (r && r.at < at) k = i; });
+    return k;
+  };
+  const out = [];
+  openers.forEach((r, k) => {
+    if (r) out.push({ type: "retest", seg: k, key: "", rank: 0, r, html: k < last ? history[k].retest_html : r.html });
+  });
+  history.forEach((h, k) => {
+    if (h.verdict || h.note.trim() || h.files.length) {
+      out.push({ type: "past", seg: k, key: h.answered || (openers[k] && openers[k].at) || "", rank: 1, h });
+    }
+  });
+  if (a) out.push({ type: "answer", seg: last, key: a.answered || (a.retest && a.retest.at) || "", rank: 1 });
+  list.forEach((m, i) => out.push({ type: "msg", seg: roundOf(m.at), key: m.at || "~", rank: 2, m, i }));
+  const by = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  return out.sort((x, y) => x.seg - y.seg || by(x.key, y.key) || x.rank - y.rank || (x.i || 0) - (y.i || 0));
+}
+
+/** The line a reply starts with: what it answers, in a few words; a click shows that bubble. */
+function quoteLine(m, list, wrap) {
+  const target = m.to && list.find((x) => x.id === m.to);
+  if (!target) return null;
+  const who = target.from === "claude" ? t("claude") : t("your." + target.kind);
+  const words = (target.text || "").trim().split("\n")[0].replace(/[`*]/g, "");   // Claude's Markdown, as plain words
+  return button("quote", `${icon("reply")}<span>${esc(who)}: ${esc(words)}</span>`, () => wrap.show(target.id), t("quote.show"));
+}
+
+function messageBox(id, m, list, wrap) {
   const mine = m.from !== "claude";
-  const box = el("div", `msg ${mine ? "you" : "claude"} ${m.kind}`);
+  const box = el("div", `bubble ${mine ? "you" : "claude"} ${m.kind}`);
   box.dataset.mid = m.id;
   const head = el("div", "who");
+  const quote = quoteLine(m, list, wrap);
   if (mine) {
-    head.innerHTML = `${icon(m.kind === "idea" ? "idea" : m.kind === "comment" ? "reply" : "question")}<span>${esc(t("your." + m.kind))}</span>`;
-    if (m.kind === "idea" && m.status && m.status !== "new") head.innerHTML += `<span class="chip ${m.status}">${esc(t("idea." + m.status))}</span>`;
+    head.innerHTML = `${icon(m.kind === "idea" ? "idea" : m.kind === "comment" ? "reply" : "question")}<span>${esc(t("your." + m.kind))}</span>`
+      + (m.kind === "idea" && m.status && m.status !== "new" ? `<span class="chip ${m.status}">${esc(t("idea." + m.status))}</span>` : "")
+      + `<span class="at">${esc(when(m.at))}</span>`;
     head.append(button("quiet tiny remove", icon("remove"), () => {
       list.splice(list.indexOf(m), 1);
       change(id, { delete: true }, 0, m.id);
-      redraw();
+      wrap.draw();
     }, t("remove")));
     box.append(head);
+    if (quote) box.append(quote);
     const area = el("textarea", "note small");
+    area.rows = 1;
     area.value = m.text;
     area.placeholder = t("ph." + m.kind);
     area.setAttribute("aria-label", t("your." + m.kind));
@@ -1073,76 +1146,151 @@ function messageBox(id, m, list, redraw) {
       change(id, { kind: m.kind, text: m.text, ...(m.to ? { to: m.to } : {}) }, 600, m.id);
     };
     box.append(area);
-    requestAnimationFrame(() => autosize(area));
   } else {
-    const target = m.to && list.find((x) => x.id === m.to);
-    head.innerHTML = `<span class="avatar">C</span><span>${esc(t("claude"))}</span>`
-      + (target ? `<span class="to">${esc(t("on." + target.kind))}</span>` : "")
-      + `<span class="at">${esc(clock(m.at))}</span>`;
-    box.append(head, el("div", "said", m.html || esc(m.text)));
+    head.innerHTML = `<span class="avatar">C</span><span>${esc(t("claude"))}</span><span class="at">${esc(when(m.at))}</span>`;
+    box.append(head);
+    if (quote) box.append(quote);
+    box.append(el("div", "said", m.html || esc(m.text)));
     const tools = el("div", "tools");
-    tools.append(button("quiet tiny", `${icon("reply")}<span>${esc(t("reply"))}</span>`, () => addMessage(id, list, "comment", redraw, m.id)));
+    tools.append(button("quiet tiny", `${icon("reply")}<span>${esc(t("reply"))}</span>`, () => addMessage(id, list, "comment", wrap, m.id)));
     box.append(tools);
   }
   return box;
 }
 
-function addMessage(id, list, kind, redraw, to) {
+/** Claude's note when it sent the item back: what changed. */
+function retestBox(e) {
+  const box = el("div", "bubble claude retest-note");
+  box.innerHTML = `<div class="who"><span class="avatar">C</span><span>${esc(t("changed"))}</span><span class="at">${esc(when(e.r.at))}</span></div>`
+    + `<div class="said">${e.html || esc(t("changed.none"))}</div>`;
+  return box;
+}
+
+/** Your answer in an earlier round, as it was. */
+function pastBox(id, h) {
+  const box = el("div", "bubble you answer past");
+  box.innerHTML = `<div class="who"><span>${esc(t("your.answer"))}</span>${verdictChip(h.verdict, h.severity)}<span class="at">${esc(when(h.answered))}</span></div>`
+    + (h.note.trim() ? `<div class="said">${h.html}</div>` : "");
+  if (h.files.length) box.append(filesRow(id, h.files, true));
+  return box;
+}
+
+/** Your answer in this round: the verdict as a chip, the note you type in, this round's files. */
+function answerBox(id, a, parts) {
+  const box = el("div", "bubble you answer");
+  box.innerHTML = `<div class="who"><span>${esc(t("your.answer"))}</span>${verdictChip(a.verdict, a.severity)}<span class="at">${esc(when(a.answered))}</span></div>`;
+  box.append(parts.note);
+  if (a.files.length) box.append(filesRow(id, a.files));
+  return box;
+}
+
+function addMessage(id, list, kind, wrap, to) {
   const m = { id: newId(), from: "you", kind, text: "", at: "" };
   if (to) m.to = to;
   if (kind === "idea") m.status = "new";
   list.push(m);
   change(id, { kind, text: "", ...(to ? { to } : {}) }, 600, m.id);
-  redraw();
-  const area = document.querySelector(`[data-mid="${m.id}"] textarea`);
+  wrap.draw();
+  const area = wrap.querySelector(`[data-mid="${CSS.escape(m.id)}"] textarea`);
   if (area) area.focus();
 }
 
-function threadBlock(id, list) {
-  const wrap = el("div", "thread-wrap");
-  const draw = () => {
+/** An item's conversation (`a` and `parts` are null for the round's own "Anything else?"). */
+function conversation(id, a, parts, list) {
+  const wrap = el("div", "convo-wrap");
+  const roundOfMessage = new Map();
+  const roundNumber = (k) => (k < a.history.length ? a.history[k].round : a.retest ? a.retest.round : S.round.state.round);
+
+  wrap.draw = () => {
+    const typing = a && parts.note === document.activeElement
+      ? { start: parts.note.selectionStart, end: parts.note.selectionEnd } : null;
+    const last = a ? a.history.length : 0;
+    const showAnswer = a && (a.verdict || a.note.trim() || a.files.length || typing);
     wrap.replaceChildren();
-    if (list.length) {
-      const box = el("div", "thread");
-      for (const m of list) box.append(messageBox(id, m, list, draw));
-      wrap.append(box);
-    }
+    const entries = entriesOf(a, list).filter((e) => e.type !== "answer" || showAnswer);
+    let latest = -1;
+    entries.forEach((e, n) => { if (e.type === "retest" || (e.type === "msg" && e.m.from === "claude")) latest = n; });
+    const sizes = {};
+    for (const e of entries) sizes[e.seg] = (sizes[e.seg] || 0) + 1;
+
+    const convo = el("div", "convo");
+    let seg = -1;
+    let folded = false;
+    entries.forEach((e, n) => {
+      if (e.type === "msg") roundOfMessage.set(e.m.id, e.seg);
+      if (e.seg !== seg) {
+        seg = e.seg;
+        const key = `${id}:${seg}`;
+        const foldable = last >= 2 && seg < last - 1;     // three rounds or more: all but the last two fold
+        folded = foldable && !unfolded.has(key);
+        if (last > 0) convo.append(roundLine(seg, folded, foldable, key, sizes[seg]));
+      }
+      if (folded) return;
+      const box = e.type === "retest" ? retestBox(e)
+        : e.type === "past" ? pastBox(id, e.h)
+        : e.type === "answer" ? answerBox(id, a, parts)
+        : messageBox(id, e.m, list, wrap);
+      if (n === latest) {
+        box.classList.add("latest");
+        $(".who", box).querySelector("span:not(.avatar)").insertAdjacentHTML("afterend", `<span class="chip latest">${esc(t("latest"))}</span>`);
+      }
+      convo.append(box);
+    });
+    if (convo.children.length) wrap.append(convo);
+
     const add = el("div", "add");
     add.append(
-      button("quiet small-button", `${icon("question")}<span>${esc(t("add.question"))}</span>`, () => addMessage(id, list, "question", draw)),
-      button("quiet small-button", `${icon("idea")}<span>${esc(t("add.idea"))}</span>`, () => addMessage(id, list, "idea", draw)),
+      button("quiet small-button", `${icon("question")}<span>${esc(t("add.question"))}</span>`, () => addMessage(id, list, "question", wrap)),
+      button("quiet small-button", `${icon("idea")}<span>${esc(t("add.idea"))}</span>`, () => addMessage(id, list, "idea", wrap)),
       button("quiet small-button", `${icon("attach")}<span>${esc(t("attach"))}</span>`, (e) => {
         e.stopPropagation();
         attachMenu(e.currentTarget, id);
       }),
     );
     wrap.append(add);
+    wrap.querySelectorAll("textarea").forEach(autosize);   // on the page already (a redraw); else renderMain does it
+    if (typing && parts.note.isConnected) {
+      parts.note.focus({ preventScroll: true });
+      parts.note.setSelectionRange(typing.start, typing.end);
+    }
   };
-  draw();
+
+  function roundLine(k, folded, foldable, key, size) {
+    const n = roundNumber(k);
+    let words = k === 0 ? t("round.n", { n }) : t("round.back", { n });
+    if (folded) {
+      const h = a.history[k];
+      words = t("round.folded", { n, v: h.verdict ? t(h.verdict) : t("open"), m: size });
+    }
+    if (!foldable) return el("div", "round-line", `<span>${esc(words)}</span>`);
+    const line = button("round-line", `<span>${esc(words)}</span>${icon(folded ? "down" : "up")}`, () => {
+      if (folded) unfolded.add(key);
+      else unfolded.delete(key);
+      wrap.draw();
+    }, t(folded ? "round.open" : "round.close"));
+    line.setAttribute("aria-expanded", String(!folded));
+    return line;
+  }
+
+  /** Scrolls to a bubble (opening its round if it is folded) and makes it flash. */
+  wrap.show = (mid) => {
+    let box = wrap.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!box && roundOfMessage.has(mid)) {
+      unfolded.add(`${id}:${roundOfMessage.get(mid)}`);
+      wrap.draw();
+      box = wrap.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    }
+    if (!box) return;
+    box.scrollIntoView({ block: "center", behavior: "smooth" });
+    box.classList.remove("flash");
+    void box.offsetWidth;
+    box.classList.add("flash");
+  };
+
   return wrap;
 }
 
 // -- an item --------------------------------------------------------------------------------------
-
-function retestBlock(a) {
-  const box = el("div", "retest");
-  box.innerHTML = `<div class="title">${icon("reply")}<b>${esc(t("retest.title", { n: a.retest.round }))}</b></div>`
-    + (a.retest.html ? `<div class="said">${a.retest.html}</div>` : "");
-  return box;
-}
-
-function historyBlock(a) {
-  const box = el("div", "history");
-  for (const h of [...a.history].reverse()) {
-    const v = h.verdict ? t(h.verdict) : t("open");
-    const d = el("details");
-    d.innerHTML = `<summary><i style="background:${h.verdict ? colour(h.verdict) : "var(--control)"}"></i>${esc(t("history.round", { n: h.round, v }))}${h.severity ? ` (${esc(t(h.severity))})` : ""}</summary>`
-      + (h.retest_html ? `<div class="said claude-said">${h.retest_html}</div>` : "")
-      + (h.html ? `<div class="said">${h.html}</div>` : "");
-    box.append(d);
-  }
-  return box;
-}
 
 function itemCard(b) {
   const a = S.round.state.items[b.id];
@@ -1152,7 +1300,6 @@ function itemCard(b) {
   top.append(el("div", "num", esc(b.number)), el("div", "text", `<p>${b.html}</p>`));
   const body = el("div", "body");
 
-  if (a.retest) body.append(retestBlock(a));
   if (b.fields.length) {
     const fields = el("div", "fields");
     for (const f of b.fields) {
@@ -1172,6 +1319,7 @@ function itemCard(b) {
       a.verdict = a.verdict === v ? "" : v;
       const fields = { verdict: a.verdict };
       if (a.verdict !== "change" && a.severity) fields.severity = a.severity = "";
+      stampAnswer(a);
       change(b.id, fields);
       refreshCard(box, b);
       refreshTotals();
@@ -1199,13 +1347,14 @@ function itemCard(b) {
   parts.note.setAttribute("aria-label", `${t("note")} ${b.number}`);
   parts.note.oninput = () => {
     a.note = parts.note.value;
+    const was = a.answered;
+    stampAnswer(a);
+    if (Boolean(was) !== Boolean(a.answered)) box.convo.draw();   // the bubble came or went
     autosize(parts.note);
     change(b.id, { note: a.note }, 600);
   };
-  answer.append(parts.note);
-  if (a.files.length) answer.append(filesRow(b.id, a.files));
-  answer.append(threadBlock(b.id, a.messages));
-  if (a.history.length) answer.append(historyBlock(a));
+  box.convo = conversation(b.id, a, parts, a.messages);
+  answer.append(box.convo);
   body.append(answer);
 
   blocks(b.children.filter((c) => c.type === "item"), body);
@@ -1229,8 +1378,7 @@ function refreshCard(box, b) {
   parts.severity.hidden = a.verdict !== "change" || isPlan();
   for (const s of SEVERITIES) parts.severities[s].setAttribute("aria-pressed", String(a.severity === s));
   parts.note.placeholder = a.verdict ? t(`note.${a.verdict}`) : t("note");
-  parts.note.hidden = !a.verdict && !a.note.trim() && parts.note !== document.activeElement;
-  requestAnimationFrame(() => autosize(parts.note));
+  box.convo.draw();
 }
 
 function updateSectionCounts() {
@@ -1298,13 +1446,15 @@ function renderMain({ keepPlace = false } = {}) {
   };
   overall.append(area);
   if (S.round.state.overall.files.length) overall.append(filesRow("overall", S.round.state.overall.files));
-  overall.append(threadBlock("overall", S.round.state.overall.messages));
+  const talk = conversation("overall", null, null, S.round.state.overall.messages);
+  talk.draw();
+  overall.append(talk);
   wrap.append(overall);
 
   main.replaceChildren(wrap);
   for (const code of S.runs.keys()) drawRun(code);
   updateSectionCounts();
-  requestAnimationFrame(() => autosize(area));
+  main.querySelectorAll("textarea.note").forEach(autosize);
 
   if (keep && keep.id) {
     const holder = card(keep.id);

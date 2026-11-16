@@ -119,3 +119,19 @@ sends round and answers in one request. The desk checks every answer first and k
 the events' lock, so `wait` wakes once and prints the hand-back, then "Your answers to my
 questions, given with this hand-back". Other sessions' cards are refused. 64 tests on Python 3.10
 and 3.14; checked in the browser pane on a scratch desk (German, English, phone width).
+
+## Item threads as a chat (2026-11-16, branch `claude/busy-goldberg-3bb53f`)
+
+Plan on the desk as `chat-thread-plan`, all agreed (fold rule too). Built on the Desks-list branch.
+
+- [x] One conversation per item in time order: your answers (now and earlier rounds), questions,
+      ideas, replies on the right; Claude's replies and re-test notes on the left; round lines
+- [x] Claude's newest bubble marked "Latest reply"; reply-to as one quote line that jumps to the
+      bubble (opening a folded round); three rounds or more: all but the last two fold
+- [x] `answered` on an item's answer (first verdict, note or file in a round; kept in history)
+- [x] Test (`test_answered_time_places_your_answer`), a check round with screenshots
+
+**Review:** 73 tests pass. Tried on a scratch desk in the browser pane: order, folding, quote
+jump and flash, Latest mark moving on a live `reply`, idea status live, typing and deleting
+saved (state.json checked), verdict bubble with focus, phone width without sideways scrolling,
+dark and light.

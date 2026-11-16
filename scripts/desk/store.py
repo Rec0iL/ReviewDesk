@@ -154,6 +154,7 @@ class Rounds:
                 a["severity"] = fields["severity"]
             if "note" in fields:
                 a["note"] = text(fields["note"])
+            answered(a)
             return a
 
         return self.edit(slug, change)
@@ -226,6 +227,8 @@ class Rounds:
             if label:
                 entry["label"] = text(label)[:300]
             files.append(entry)
+            if item_id != "overall":
+                answered(item(state, item_id))
             return entry
 
         return self.edit(slug, change)
@@ -237,6 +240,8 @@ class Rounds:
             files = files_of(state, item_id)
             before = len(files)
             files[:] = [f for f in files if f["name"] != name]
+            if item_id != "overall":
+                answered(item(state, item_id))
             return len(files) != before
 
         return self.edit(slug, change)
@@ -284,8 +289,9 @@ class Rounds:
                 a["history"].append({
                     "round": state["round"] - 1, "verdict": a["verdict"], "severity": a["severity"],
                     "note": a["note"], "files": a["files"], "retest": a["retest"], "at": now(),
+                    "answered": a.get("answered"),
                 })
-                a.update(verdict="", severity="", note="", files=[])
+                a.update(verdict="", severity="", note="", files=[], answered=None)
                 a["retest"] = {"round": state["round"], "note": text(notes.get(item_id, note)), "at": now()}
             state["sent"] = None
             state["message"] = ""
@@ -300,10 +306,20 @@ def blank(it, saved=None):
     a = {
         "text": it["md"], "verdict": "works" if it["done"] else "", "severity": "", "note": "",
         "messages": [], "files": [], "retest": None, "history": [], "extra": bool(it.get("extra")),
+        "answered": None,
     }
     if saved:
         a.update({k: saved[k] for k in a if k in saved and k != "text"})
     return a
+
+
+def answered(a):
+    """When you first answered an item in this round (verdict, note or a file), so the page can
+    place your answer in the item's conversation; gone again once all of it is."""
+    if a["verdict"] or a["note"].strip() or a["files"]:
+        a["answered"] = a.get("answered") or now()
+    else:
+        a["answered"] = None
 
 
 def archive_overall(state):
@@ -322,7 +338,7 @@ def archive_overall(state):
     extras.append(entry)
     state["items"][entry["id"]] = {
         "text": entry["text"], "verdict": "", "severity": "", "note": "", "messages": o["messages"],
-        "files": o["files"], "retest": None, "history": [], "extra": True,
+        "files": o["files"], "retest": None, "history": [], "extra": True, "answered": None,
     }
     state["overall"] = {**o, "note": "", "files": [], "messages": []}
 
