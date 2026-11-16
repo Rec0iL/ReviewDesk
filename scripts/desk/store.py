@@ -499,10 +499,7 @@ class Questions:
         return [q for q in self.all() if not q.get("answered")]
 
     def get(self, qid):
-        found = next((q for q in self.all() if q["id"] == qid), None)
-        if not found:
-            raise ValueError(f"no question {qid!r}")
-        return found
+        return self._find(self.all(), qid)
 
     def add(self, data):
         """A new set of questions (checked first). Returns it with its id."""
@@ -522,25 +519,57 @@ class Questions:
         note. Returns the set with its answers."""
         with LOCK:
             sets = self.all()
-            found = next((q for q in sets if q["id"] == qid), None)
-            if not found:
-                raise ValueError(f"no question {qid!r}")
+            found = self._find(sets, qid)
             if found.get("answered"):
                 raise ValueError("already answered")
-            if not isinstance(answers, list) or len(answers) != len(found["questions"]):
-                raise ValueError("one answer for each question")
-            out = []
-            for q, a in zip(found["questions"], answers):
-                labels = [o["label"] for o in q["options"]]
-                chosen = [c for c in (a.get("chosen") or []) if c in labels]
-                if not q.get("multiSelect") and len(chosen) > 1:
-                    raise ValueError(f"one choice for {q['question']!r}")
-                out.append({"question": q["question"], "chosen": chosen,
-                            "other": text(a.get("other") or "")[:5000], "note": text(a.get("note") or "")[:5000]})
-            found["answers"] = out
-            found["answered"] = now()
+            found.update(answers=checked_answers(found, answers), answered=now())
             write_json(self.path, sets)
             return found
+
+    def answer_all(self, given, owner=""):
+        """The answers given with a hand-back (`[{id, answers}]`), for the round owner's cards
+        only. All of them are checked before any is kept: one wrong, none kept. A set answered
+        in the meantime (another tab) is left as it is. Returns the sets answered now."""
+        if not isinstance(given, list):
+            raise ValueError("answers: a list of question sets")
+        with LOCK:
+            sets = self.all()
+            done = []
+            for g in given:
+                found = self._find(sets, g.get("id") if isinstance(g, dict) else None)
+                if found.get("owner", "") != owner:
+                    raise ValueError(f"{found['id']} belongs to another session")
+                if not found.get("answered") and all(found is not d for d, _ in done):
+                    done.append((found, checked_answers(found, g.get("answers"))))
+            at = now()
+            for found, answers in done:
+                found.update(answers=answers, answered=at)
+            if done:
+                write_json(self.path, sets)
+            return [found for found, _ in done]
+
+    @staticmethod
+    def _find(sets, qid):
+        found = next((q for q in sets if q["id"] == qid), None)
+        if not found:
+            raise ValueError(f"no question {qid!r}")
+        return found
+
+
+def checked_answers(found, answers):
+    """Answers to a set as the page sends them, checked against its questions."""
+    if not isinstance(answers, list) or len(answers) != len(found["questions"]):
+        raise ValueError("one answer for each question")
+    out = []
+    for q, a in zip(found["questions"], answers):
+        a = a if isinstance(a, dict) else {}
+        labels = [o["label"] for o in q["options"]]
+        chosen = [c for c in (a.get("chosen") or []) if c in labels]
+        if not q.get("multiSelect") and len(chosen) > 1:
+            raise ValueError(f"one choice for {q['question']!r}")
+        out.append({"question": q["question"], "chosen": chosen,
+                    "other": text(a.get("other") or "")[:5000], "note": text(a.get("note") or "")[:5000]})
+    return out
 
 
 def checked_questions(data):

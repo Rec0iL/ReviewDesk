@@ -609,6 +609,12 @@ async function flyAway(r, label, request, back) {
 async function handBack() {
   if (S.handing || S.flying || !S.current) return;
   if (!(await confirmOpen())) return;
+  let answers = [];
+  if (ownAsks().length) {
+    // "Answer and hand back": Claude's cards first; they go back in the same step
+    answers = await walkAsks();
+    if (!answers) return;
+  }
   const handBtn = $(".head .hand");
   const rect = handBtn.getBoundingClientRect();
   const label = handBtn.textContent.trim();
@@ -618,8 +624,9 @@ async function handBack() {
   refreshHead();
   const request = (async () => {
     if (!(await flushNow())) throw new Error(S.failed || t("save.waiting"));
-    const r = await api("/api/send", { round, message: S.drafts[round] || "" });
+    const r = await api("/api/send", { round, message: S.drafts[round] || "", answers });
     S.drafts[round] = "";
+    if (answers.length) asksHandedBack(answers.map((a) => a.id));
     if (S.current === round) {
       S.round.state.sent = r.sent;
       const entry = summary();
@@ -904,7 +911,9 @@ function renderHead(head) {
   $(".copy-summary", head).onclick = copySummary;
   head.querySelectorAll(".jump").forEach((b) => (b.onclick = () => jumpTo(b.dataset.v)));
   const hand = $(".hand", head);
-  $("span", hand).textContent = S.handing ? t("handing") : state.sent ? t("hand.again") : t("hand.back");
+  const asks = ownAsks();
+  $("span", hand).textContent = S.handing ? t("handing") : asks.length ? t("hand.answer") : state.sent ? t("hand.again") : t("hand.back");
+  hand.title = asks.length && !S.handing ? t("hand.answer.tip", { n: asks.reduce((n, set) => n + set.questions.length, 0) }) : "";
   hand.disabled = S.handing || S.flying;
   hand.onclick = () => handBack();
   const box = $(".handbox", head);

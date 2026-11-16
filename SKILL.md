@@ -108,6 +108,13 @@ on the page: `review-desk ask` with JSON shaped like your chat question tool (se
 `references/questions.md`). The user gets a chime and a card; the answers come through `wait`
 (or right away with `ask --wait`). With no page open, ask in the chat as usual.
 
+Cards you ask while a round of yours waits for the user (not handed back yet, or back for another
+look) go back with it: the round's button then says **Answer and hand back**, walks them through
+your open cards and hands back once they are done. One `wait` prints both, the hand-back first,
+then "Your answers to my questions, given with this hand-back". Only cards asked under the round's
+own name count (`ask --as NAME` for a round with `owner: NAME`; plain `ask` for a round without
+one).
+
 ## Writing a good round
 
 - Write in the user's language. The page's own words follow their browser (English or German).

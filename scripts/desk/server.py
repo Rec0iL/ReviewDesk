@@ -770,12 +770,23 @@ def handler_for(desk, server_ref, on_phone=False):
                 return {"run": desk.runs.stop(data["id"])}
             if path == "/api/send":
                 message = str(data.get("message") or "")
-                sent = rounds.send(slug, message)
+                rounds.doc(slug)   # the round is there before anything is kept
                 owner = desk.owner_of(slug)
-                desk.events.add("send", round=slug, owner=owner, message=rounds.state(slug)["message"])
+                # "Answer and hand back": the owner's question cards answered with it. One step
+                # under the events' lock, so `wait` wakes to all of it or none.
+                with desk.events.changed:
+                    answered = desk.questions.answer_all(data.get("answers") or [], owner)
+                    sent = rounds.send(slug, message)
+                    for q in answered:
+                        desk.events.add("answer", question=q["id"], title=q["title"], answers=q["answers"],
+                                        owner=owner, round=slug)
+                    desk.events.add("send", round=slug, owner=owner, message=rounds.state(slug)["message"],
+                                    answered=[q["id"] for q in answered])
                 desk.broadcast(type="round", slug=slug, by="you", client=data.get("client"))
                 desk.broadcast(type="rounds")
-                return {"sent": sent, "listening": desk.listening(owner)}
+                if answered:
+                    desk.broadcast(type="questions", client=data.get("client"))
+                return {"sent": sent, "listening": desk.listening(owner), "answered": [q["id"] for q in answered]}
             if path == "/api/answer":
                 answered = desk.questions.answer(data["id"], data["answers"])
                 desk.events.add("answer", question=answered["id"], title=answered["title"], answers=answered["answers"],

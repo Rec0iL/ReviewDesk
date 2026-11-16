@@ -251,6 +251,20 @@ class ProjectTest(Temp):
 
 # -- answers on disk -----------------------------------------------------------------------------
 
+class PageWordsTest(unittest.TestCase):
+    def test_answer_and_hand_back_speaks_both_languages(self):
+        import re
+        words = (ROOT / "assets" / "page" / "i18n.js").read_text(encoding="utf-8")
+        en, de = words.split("\n  de: {", 1)
+        keys = lambda part: set(re.findall(r'"([a-z][\w.]*)":', part))
+        for key in ("hand.answer", "plan.hand.answer", "hand.answer.tip", "ask.next", "ask.hand", "plan.ask.hand"):
+            self.assertIn(key, keys(en), key)
+            self.assertIn(key, keys(de), key)
+        self.assertIn('"hand.answer": "Answer and hand back"', en)
+        self.assertIn('"hand.answer": "Beantworten und zurückgeben"', de)
+        self.assertEqual(keys(en) - keys(de), set())
+
+
 class StoreTest(Temp):
     def setUp(self):
         super().setUp()
@@ -910,6 +924,63 @@ class ServerTest(ServerBase):
         self.request("POST", "/api/answer", {"id": "q2", "answers": [{"chosen": ["A"]}]})
         self.assertEqual(self.request("GET", "/api/wait?timeout=0.3")[1]["events"], [])
         self.assertEqual([e["question"] for e in self.request("GET", "/api/wait?timeout=0.3&as=side")[1]["events"]], ["q2"])
+
+    def ask(self, question, owner=""):
+        return self.request("POST", "/api/claude", {"action": "ask", "owner": owner, "title": question,
+                                                    "questions": [{"question": question, "options": ["Yes", "No"]}]})[1]["question"]["id"]
+
+    def test_answer_and_hand_back_reach_wait_together(self):
+        mine, other = self.ask("Ship it?"), self.ask("Rename it?", owner="side")
+        got = []
+        listener = threading.Thread(target=lambda: got.extend(self.desk.wait(5)))
+        listener.start()
+        time.sleep(0.2)
+        status, out = self.request("POST", "/api/send", {"round": "sample", "message": "go on",
+                                                         "answers": [{"id": mine, "answers": [{"chosen": ["Yes"], "note": "today"}]}]})
+        listener.join(6)
+        self.assertEqual((status, out["answered"]), (200, [mine]))
+        # one wake-up, both in it: the answer first, then the hand-back that names it
+        self.assertEqual([e["type"] for e in got], ["answer", "send"])
+        self.assertEqual((got[0]["question"], got[0]["round"], got[0]["answers"][0]["chosen"]), (mine, "sample", ["Yes"]))
+        self.assertEqual((got[1]["round"], got[1]["answered"]), ("sample", [mine]))
+        self.assertEqual([q["id"] for q in self.request("GET", "/api/questions")[1]["questions"]], [other])
+
+    def test_answer_and_hand_back_is_all_or_nothing(self):
+        mine, other = self.ask("Ship it?"), self.ask("Rename it?", owner="side")
+        sent_before = self.desk.rounds.state("sample")["sent"]
+        bad = [
+            [{"id": other, "answers": [{"chosen": ["Yes"]}]}],                 # another session's card
+            [{"id": mine, "answers": [{"chosen": ["Yes"]}, {"chosen": ["No"]}]}],  # two answers for one question
+            [{"id": mine, "answers": [{"chosen": ["Yes"]}]}, {"id": "q99", "answers": []}],  # one good, one unknown
+        ]
+        for answers in bad:
+            status, out = self.request("POST", "/api/send", {"round": "sample", "answers": answers})
+            self.assertEqual(status, 400, answers)
+            self.assertEqual(self.desk.rounds.state("sample")["sent"], sent_before)
+            self.assertEqual(sorted(q["id"] for q in self.desk.questions.pending()), sorted([mine, other]))
+        self.assertIn("another session", self.request("POST", "/api/send", {"round": "sample", "answers": bad[0]})[1]["error"])
+        self.assertEqual(self.request("GET", "/api/wait?timeout=0.2")[1]["events"], [])
+        # a card answered in the meantime (another tab) is skipped, not an error
+        self.request("POST", "/api/answer", {"id": mine, "answers": [{"chosen": ["No"]}]})
+        status, out = self.request("POST", "/api/send", {"round": "sample", "answers": [{"id": mine, "answers": [{"chosen": ["Yes"]}]}]})
+        self.assertEqual((status, out["answered"]), (200, []))
+        self.assertEqual(self.desk.questions.get(mine)["answers"][0]["chosen"], ["No"])
+
+    def test_wait_prints_answers_with_their_hand_back(self):
+        import contextlib
+        import io
+        from desk import cli
+        mine = self.ask("Ship it?")
+        self.request("POST", "/api/send", {"round": "sample", "answers": [{"id": mine, "answers": [{"chosen": ["Yes"], "note": "today"}]}]})
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            cli.show_events(self.root, self.desk.wait(1))
+        out = printed.getvalue()
+        self.assertTrue(out.startswith("Results from my review are in, read them."), out[:80])
+        self.assertIn("Your answers to my questions, given with this hand-back:", out)
+        self.assertIn("- Ship it?\n  → Yes\n  note: today", out)
+        self.assertNotIn("Answered at", out)                                   # not twice
+        self.assertLess(out.index("Handed back at"), out.index("Your answers to my questions"))
 
     def test_watcher_sees_claude(self):
         stop = threading.Event()

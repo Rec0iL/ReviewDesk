@@ -27,7 +27,8 @@ folder (the git repository, or the folder itself), or the one `--project` names.
                            question cards on the page (JSON like the chat's question tool:
                            {"title", "questions": [{"question", "header", "multiSelect",
                            "options": [{"label", "description"}]}]}); the answers come
-                           through `wait` (or right away with --wait)
+                           through `wait` (or right away with --wait); while a round of
+                           the same owner waits, they go back with its hand-back
     config [--title T] [--accent #rrggbb]
     selftest               checks that the desk works on this computer
     update                 gets a newer Review Desk (git pull, fast-forward only)
@@ -198,10 +199,13 @@ def status(root, hook=False, owner=""):
 
 
 def show_events(root, events, owner=""):
-    """What `wait` prints: each hand-back with its answers, each answered question."""
+    """What `wait` prints: each hand-back with its answers (and the question cards answered with
+    it), each question answered on its own."""
     folder = proj.review_dir(root)
     rounds = Rounds(folder)
     shown = set()
+    by_question = {e.get("question"): e for e in events if e["type"] == "answer"}
+    with_send = {q for e in events if e["type"] == "send" for q in e.get("answered", [])}
     for e in events:
         if e["type"] == "send" and e.get("round") not in shown:
             slug = e["round"]
@@ -214,21 +218,31 @@ def show_events(root, events, owner=""):
                 print(answers_text(rounds, slug))
             except (OSError, ValueError) as err:
                 print(f"(couldn't read them: {err})")
+            given = [by_question[q] for q in e.get("answered", []) if q in by_question]
+            if given:
+                print("Your answers to my questions, given with this hand-back:\n")
+                for a in given:
+                    print_answer(a, f"{a.get('title') or 'Questions'} ({a.get('question')})")
             print()
-        elif e["type"] == "answer":
-            print(f"Answered at {e['at']}: {e.get('title') or e.get('question', '?')} ({e.get('question')})")
-            for a in e.get("answers", []):
-                picked = ", ".join(a.get("chosen") or []) or "(none of the options)"
-                print(f"- {a['question']}\n  → {picked}")
-                if a.get("other", "").strip():
-                    print(f"  → in their own words: {a['other'].strip()}")
-                if a.get("note", "").strip():
-                    print(f"  note: {a['note'].strip()}")
-            print()
+        elif e["type"] == "answer" and e.get("question") not in with_send:
+            print_answer(e, f"Answered at {e['at']}: {e.get('title') or e.get('question', '?')} ({e.get('question')})")
     if not owner:   # the Ideas tab belongs to no session in particular: the main one gets it
         print(board_text(Board(folder), mark=True), end="")
     again = f"review-desk wait --as {owner}" if owner else "review-desk wait"
     print(f"Run `{again}` again in the background to hear the next hand-back.")
+
+
+def print_answer(e, heading):
+    """One answered set of question cards: each question with what was chosen."""
+    print(heading)
+    for a in e.get("answers", []):
+        picked = ", ".join(a.get("chosen") or []) or "(none of the options)"
+        print(f"- {a['question']}\n  → {picked}")
+        if a.get("other", "").strip():
+            print(f"  → in their own words: {a['other'].strip()}")
+        if a.get("note", "").strip():
+            print(f"  note: {a['note'].strip()}")
+    print()
 
 
 def board_text(board, mark=False, every=False):

@@ -111,3 +111,11 @@ first: `3ab875a` (a worktree's name only on its own desk; a stopped `wait` takes
 - [x] `start` opens no tab when another desk's tab watches; `status`/`ask` count that tab
 - [x] Phone: no Desks list, no peer events
 - [ ] Tests, `SKILL.md`, `references/commands.md`, a check round with screenshots
+
+**Answer and hand back** (2026-11-16): while a round waits for the user and its own session has
+open question cards, its button reads "Answer and hand back" ("Answer and send comments" on a
+plan), walks through the cards (Next, Hand back on the last; Later stops and sends nothing) and
+sends round and answers in one request. The desk checks every answer first and keeps both under
+the events' lock, so `wait` wakes once and prints the hand-back, then "Your answers to my
+questions, given with this hand-back". Other sessions' cards are refused. 64 tests on Python 3.10
+and 3.14; checked in the browser pane on a scratch desk (German, English, phone width).

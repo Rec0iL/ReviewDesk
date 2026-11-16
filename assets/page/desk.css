@@ -449,6 +449,7 @@ dialog.confirm footer { justify-content: flex-end; }
 @keyframes arrive { from { transform: translateY(12px); opacity: 0; } }
 dialog.ask { width: min(720px, calc(100vw - 32px)); }
 dialog.ask header .count { font-size: 12.5px; color: var(--dim); }
+dialog.ask footer .walk-hand { display: inline-flex; align-items: center; gap: 7px; }
 .ask-body { overflow: auto; padding: 6px 18px 12px; }
 fieldset.q { border: 0; padding: 0; margin: 14px 0 18px; }
 fieldset.q legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-weight: 600; font-size: 15px; padding: 0; margin-bottom: 8px; }

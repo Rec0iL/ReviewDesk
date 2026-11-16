@@ -254,27 +254,85 @@ function renderAsks() {
     pill.innerHTML = `${icon("question")}<span>${esc(t("asks.pill", { n: S.questions.length }))}</span>`;
   }
   renderSide();
+  refreshHead(); // the hand-back button says whether cards go back with it
+}
+
+/**
+ * The open question cards of the shown round's own session, while the round waits for you (not
+ * handed back yet, or back for another look): they go back with its hand-back.
+ */
+function ownAsks() {
+  if (!S.round || S.round.state.sent) return [];
+  const owner = (summary() || {}).owner || "";
+  return (S.questions || []).filter((q) => (q.owner || "") === owner);
+}
+
+/**
+ * "Answer and hand back": the round's own cards one after another, answered in the page only.
+ * Resolves to their answers (`[{id, answers}]`) for the hand-back, or null when the user stops.
+ * Cards that come in while they walk join at the end.
+ */
+async function walkAsks() {
+  const sets = ownAsks();
+  S.walking = true;
+  try {
+    for (let k = 0; k < sets.length; k++) {
+      const ok = await new Promise((resolve) => openAsk(sets[k], { step: k + 1, total: sets.length, resolve }));
+      if (!ok) return null;
+      if (k === sets.length - 1) sets.push(...ownAsks().filter((q) => !sets.some((s) => s.id === q.id)));
+    }
+  } finally {
+    S.walking = false;
+  }
+  const all = drafts();
+  return sets.map((set) => ({ id: set.id, answers: all[set.id] }));
+}
+
+/** After a hand-back took the cards with it: their drafts go, the pill and the list follow. */
+async function asksHandedBack(ids) {
+  const rest = drafts();
+  for (const id of ids) delete rest[id];
+  store(DRAFTS, rest);
+  await loadQuestions();
 }
 
 function drafts() {
   return stored(DRAFTS);
 }
 
-function openAsk() {
-  const set = S.questions[0];
-  if (!set) return;
+/**
+ * A set of question cards in a window. Alone it sends its answers itself; as a step of
+ * "Answer and hand back" (`walk`: step, total, resolve) it only keeps them, and its button says
+ * Next, or Hand back on the last step. Closing it any other way stops the walk.
+ */
+function openAsk(set = S.questions[0], walk = null) {
+  if (S.walking && !walk) return; // a new card waits for the walk: it joins at its end
+  if (!set || !set.questions) set = S.questions[0];
+  if (!set) return walk && walk.resolve(false);
   document.querySelector("dialog.ask")?.close();
   const all = drafts();
   const draft = all[set.id] || set.questions.map(() => ({ chosen: [], other: "", note: "" }));
   const keep = () => store(DRAFTS, { ...drafts(), [set.id]: draft });
 
   const d = dialog("ask");
+  let done = false;
+  if (walk) d.addEventListener("close", () => walk.resolve(done));
   const head = el("header", null, `<h2>${esc(set.title || t("asks.title"))}</h2>`);
-  if (S.questions.length > 1) head.append(el("span", "count", esc(t("of", { a: 1, b: S.questions.length }))));
+  const [step, total] = walk ? [walk.step, walk.total] : [1, S.questions.length];
+  if (total > 1) head.append(el("span", "count", esc(t("of", { a: step, b: total }))));
   head.append(button("quiet close", icon("remove"), () => d.close(), t("ask.later")));
   const body = el("div", "ask-body");
   const progress = el("span", "hint");
-  const send = button("primary", esc(t("ask.send")), submit);
+  const last = walk && step === total;
+  const send = walk
+    ? button(last ? "primary walk-hand" : "primary", last ? `${icon("send")}<span>${esc(t("ask.hand"))}</span>` : esc(t("ask.next")), next)
+    : button("primary", esc(t("ask.send")), submit);
+
+  function next() {
+    keep();
+    done = true;
+    d.close();
+  }
 
   set.questions.forEach((q, n) => {
     const a = draft[n];
